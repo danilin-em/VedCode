@@ -76,7 +76,12 @@ func Walk(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("root path is not a directory: %s", rootPath)
 	}
 
-	gi := loadGitignore(rootPath)
+	// Cache of gitignore matchers keyed by relative directory path from root.
+	// "" = root .gitignore, "subdir" = subdir/.gitignore, etc.
+	giCache := make(map[string]*gitignore.GitIgnore)
+	if gi := loadGitignore(rootPath); gi != nil {
+		giCache[""] = gi
+	}
 
 	var customIgnore *gitignore.GitIgnore
 	if len(opts.IgnorePatterns) > 0 {
@@ -103,8 +108,15 @@ func Walk(opts Options) (*Result, error) {
 			return filepath.SkipDir
 		}
 
-		// Check .gitignore
-		if gi != nil && matchesIgnore(gi, relPath, d.IsDir()) {
+		// Load nested .gitignore when entering a directory
+		if d.IsDir() {
+			if gi := loadGitignore(filepath.Join(rootPath, relPath)); gi != nil {
+				giCache[relPath] = gi
+			}
+		}
+
+		// Check all applicable .gitignore files (from root down to parent directory)
+		if matchesAnyGitignore(giCache, relPath, d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -158,6 +170,43 @@ func Walk(opts Options) (*Result, error) {
 	}, nil
 }
 
+// matchesAnyGitignore checks a path against all applicable .gitignore files
+// from root down to the path's parent directory.
+func matchesAnyGitignore(giCache map[string]*gitignore.GitIgnore, relPath string, isDir bool) bool {
+	// Collect all ancestor directories (including root "")
+	dirs := []string{""}
+	parts := strings.Split(filepath.Dir(relPath), string(filepath.Separator))
+	if parts[0] != "." {
+		accumulated := ""
+		for _, p := range parts {
+			if accumulated == "" {
+				accumulated = p
+			} else {
+				accumulated = accumulated + string(filepath.Separator) + p
+			}
+			dirs = append(dirs, accumulated)
+		}
+	}
+
+	for _, dir := range dirs {
+		gi, ok := giCache[dir]
+		if !ok {
+			continue
+		}
+		// Path checked must be relative to the directory containing the .gitignore
+		var checkPath string
+		if dir == "" {
+			checkPath = relPath
+		} else {
+			checkPath, _ = filepath.Rel(dir, relPath)
+		}
+		if matchesIgnore(gi, checkPath, isDir) {
+			return true
+		}
+	}
+	return false
+}
+
 // matchesIgnore checks if a path matches a gitignore pattern set.
 func matchesIgnore(gi *gitignore.GitIgnore, relPath string, isDir bool) bool {
 	if isDir {
@@ -166,9 +215,9 @@ func matchesIgnore(gi *gitignore.GitIgnore, relPath string, isDir bool) bool {
 	return gi.MatchesPath(relPath)
 }
 
-// loadGitignore parses .gitignore from the root directory. Returns nil if not found.
-func loadGitignore(rootPath string) *gitignore.GitIgnore {
-	path := filepath.Join(rootPath, ".gitignore")
+// loadGitignore parses .gitignore from the given directory. Returns nil if not found.
+func loadGitignore(dir string) *gitignore.GitIgnore {
+	path := filepath.Join(dir, ".gitignore")
 	gi, err := gitignore.CompileIgnoreFile(path)
 	if err != nil {
 		return nil

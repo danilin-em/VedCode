@@ -295,6 +295,52 @@ func TestWalk_EmptyFile(t *testing.T) {
 	}
 }
 
+func TestWalk_NestedGitignore(t *testing.T) {
+	root := t.TempDir()
+	createFile(t, root, ".gitignore", "*.log\n")
+	createFile(t, root, "main.go", "package main")
+	createFile(t, root, "app.log", "root log")
+	createFile(t, root, "subdir/code.go", "package subdir")
+	createFile(t, root, "subdir/.gitignore", "*.tmp\ngenerated/\n")
+	createFile(t, root, "subdir/data.tmp", "temp data")
+	createFile(t, root, "subdir/generated/out.go", "package gen")
+	createFile(t, root, "subdir/keep.go", "package subdir")
+	// .tmp in root should NOT be excluded (only subdir's .gitignore has *.tmp)
+	createFile(t, root, "root.tmp", "root tmp")
+
+	result, err := Walk(Options{RootPath: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fileSet := make(map[string]bool)
+	for _, f := range result.Files {
+		fileSet[f] = true
+	}
+
+	if !fileSet["main.go"] {
+		t.Error("main.go should be included")
+	}
+	if !fileSet["subdir/code.go"] {
+		t.Error("subdir/code.go should be included")
+	}
+	if !fileSet["subdir/keep.go"] {
+		t.Error("subdir/keep.go should be included")
+	}
+	if !fileSet["root.tmp"] {
+		t.Error("root.tmp should be included (only subdir/.gitignore has *.tmp)")
+	}
+	if fileSet["app.log"] {
+		t.Error("app.log should be excluded by root .gitignore")
+	}
+	if fileSet["subdir/data.tmp"] {
+		t.Error("subdir/data.tmp should be excluded by subdir/.gitignore")
+	}
+	if fileSet["subdir/generated/out.go"] {
+		t.Error("subdir/generated/out.go should be excluded by subdir/.gitignore")
+	}
+}
+
 func TestWalk_GitignoreDirectoryPattern(t *testing.T) {
 	root := t.TempDir()
 	createFile(t, root, ".gitignore", "node_modules/\n")
