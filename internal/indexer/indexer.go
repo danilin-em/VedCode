@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"VedCode/internal/config"
@@ -27,7 +29,7 @@ type fileAnalysis struct {
 }
 
 // Run executes the full indexing cycle for the project.
-func Run(configPath string) error {
+func Run(configPath string, force bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -46,6 +48,24 @@ func Run(configPath string) error {
 
 	// Initialize store
 	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name)
+
+	// Force mode: delete existing data and start fresh
+	if force {
+		log.Println("Force mode: cleaning up existing data...")
+
+		overviewPath := filepath.Join(rootPath, ".vedcode", "project_overview.md")
+		if err := os.Remove(overviewPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing project overview: %w", err)
+		}
+		log.Println("Deleted .vedcode/project_overview.md")
+
+		if err := db.DeleteCollection(); err != nil {
+			log.Printf("Warning: could not delete collection: %v", err)
+		} else {
+			log.Println("Deleted Qdrant collection")
+		}
+	}
+
 	if err := db.EnsureCollection(); err != nil {
 		return fmt.Errorf("ensuring collection: %w", err)
 	}
@@ -129,19 +149,24 @@ func Run(configPath string) error {
 
 	// --- Stage 2: File indexing ---
 	log.Println("\n--- Stage 2: File indexing ---")
+	log.Printf("Using %d worker(s)", cfg.Indexer.Workers)
 
+	var indexedCount atomic.Int64
+	var errorCount atomic.Int64
 	skippedCount := 0
-	indexedCount := 0
-	errorCount := 0
+
+	sem := make(chan struct{}, cfg.Indexer.Workers)
+	var wg sync.WaitGroup
+	totalFiles := len(walkResult.Files)
 
 	for i, relPath := range walkResult.Files {
 		absPath := filepath.Join(rootPath, relPath)
 
-		// Compute file hash
+		// Read file and compute hash before spawning goroutine (fast, allows early skip)
 		content, err := os.ReadFile(absPath)
 		if err != nil {
-			log.Printf("[%d/%d] Error reading %s: %v", i+1, len(walkResult.Files), relPath, err)
-			errorCount++
+			log.Printf("[%d/%d] Error reading %s: %v", i+1, totalFiles, relPath, err)
+			errorCount.Add(1)
 			continue
 		}
 
@@ -153,71 +178,80 @@ func Run(configPath string) error {
 			continue
 		}
 
-		log.Printf("[%d/%d] Indexing %s", i+1, len(walkResult.Files), relPath)
+		// Acquire semaphore slot and launch worker
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(idx int, relPath string, content []byte, hash string) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		// Analyze file via LLM
-		filePrompt, err := prompts.Render("SourceCodeAnalysis.md", map[string]string{
-			"CONTENT":          string(content),
-			"PROJECT_OVERVIEW": projectOverview,
-		})
-		if err != nil {
-			log.Printf("[%d/%d] Error rendering prompt for %s: %v", i+1, len(walkResult.Files), relPath, err)
-			errorCount++
-			continue
-		}
+			log.Printf("[%d/%d] Indexing %s", idx+1, totalFiles, relPath)
 
-		response, err := provider.GenerateContent(filePrompt)
-		if err != nil {
-			log.Printf("[%d/%d] Error analyzing %s: %v", i+1, len(walkResult.Files), relPath, err)
-			errorCount++
-			continue
-		}
+			// Analyze file via LLM
+			filePrompt, err := prompts.Render("SourceCodeAnalysis.md", map[string]string{
+				"CONTENT":          string(content),
+				"PROJECT_OVERVIEW": projectOverview,
+			})
+			if err != nil {
+				log.Printf("[%d/%d] Error rendering prompt for %s: %v", idx+1, totalFiles, relPath, err)
+				errorCount.Add(1)
+				return
+			}
 
-		analysis, err := parseAnalysis(response)
-		if err != nil {
-			log.Printf("[%d/%d] Error parsing analysis for %s: %v", i+1, len(walkResult.Files), relPath, err)
-			errorCount++
-			continue
-		}
+			response, err := provider.GenerateContent(filePrompt)
+			if err != nil {
+				log.Printf("[%d/%d] Error analyzing %s: %v", idx+1, totalFiles, relPath, err)
+				errorCount.Add(1)
+				return
+			}
 
-		// Get embedding for the summary
-		embedding, err := provider.EmbedContent(analysis.Summary)
-		if err != nil {
-			log.Printf("[%d/%d] Error embedding %s: %v", i+1, len(walkResult.Files), relPath, err)
-			errorCount++
-			continue
-		}
+			analysis, err := parseAnalysis(response)
+			if err != nil {
+				log.Printf("[%d/%d] Error parsing analysis for %s: %v", idx+1, totalFiles, relPath, err)
+				errorCount.Add(1)
+				return
+			}
 
-		// Upsert point in Qdrant
-		point := &store.Point{
-			ID:               store.FilePathToID(relPath),
-			Vector:           embedding,
-			Summary:          analysis.Summary,
-			FilePath:         relPath,
-			FileHash:         hash,
-			Type:             "file",
-			Responsibilities: analysis.Responsibilities,
-			Domain:           analysis.Domain,
-			Language:         analysis.Language,
-			IndexedAt:        time.Now(),
-		}
+			// Get embedding for the summary
+			embedding, err := provider.EmbedContent(analysis.Summary)
+			if err != nil {
+				log.Printf("[%d/%d] Error embedding %s: %v", idx+1, totalFiles, relPath, err)
+				errorCount.Add(1)
+				return
+			}
 
-		if err := db.UpsertPoint(point); err != nil {
-			log.Printf("[%d/%d] Error saving %s: %v", i+1, len(walkResult.Files), relPath, err)
-			errorCount++
-			continue
-		}
+			// Upsert point in Qdrant
+			point := &store.Point{
+				ID:               store.FilePathToID(relPath),
+				Vector:           embedding,
+				Summary:          analysis.Summary,
+				FilePath:         relPath,
+				FileHash:         hash,
+				Type:             "file",
+				Responsibilities: analysis.Responsibilities,
+				Domain:           analysis.Domain,
+				Language:         analysis.Language,
+				IndexedAt:        time.Now(),
+			}
 
-		indexedCount++
+			if err := db.UpsertPoint(point); err != nil {
+				log.Printf("[%d/%d] Error saving %s: %v", idx+1, totalFiles, relPath, err)
+				errorCount.Add(1)
+				return
+			}
+
+			indexedCount.Add(1)
+		}(i, relPath, content, hash)
 	}
+	wg.Wait()
 
 	// --- Summary ---
 	log.Println("\n=== Indexing complete ===")
 	log.Printf("Total files:   %d", len(walkResult.Files))
-	log.Printf("Indexed:       %d", indexedCount)
+	log.Printf("Indexed:       %d", indexedCount.Load())
 	log.Printf("Skipped:       %d (unchanged)", skippedCount)
 	log.Printf("Deleted:       %d (removed from project)", deletedCount)
-	log.Printf("Errors:        %d", errorCount)
+	log.Printf("Errors:        %d", errorCount.Load())
 
 	return nil
 }

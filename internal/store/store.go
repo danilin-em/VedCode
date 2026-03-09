@@ -30,7 +30,9 @@ type SearchResult struct {
 // Store defines the interface for vector storage operations.
 type Store interface {
 	EnsureCollection() error
+	DeleteCollection() error
 	UpsertPoint(point *Point) error
+	UpsertPoints(points []*Point) error
 	GetAllFilePoints() ([]*Point, error)
 	GetPointByFilePath(path string) (*Point, error)
 	DeletePoints(ids []string) error

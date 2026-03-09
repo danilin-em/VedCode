@@ -49,6 +49,27 @@ func (q *QdrantStore) EnsureCollection() error {
 	return q.put("/collections/"+q.collection, body)
 }
 
+// DeleteCollection deletes the entire collection from Qdrant.
+func (q *QdrantStore) DeleteCollection() error {
+	req, err := http.NewRequest(http.MethodDelete, q.baseURL+"/collections/"+q.collection, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := q.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete collection: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("qdrant delete collection returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // UpsertPoint creates or updates a point in the collection.
 func (q *QdrantStore) UpsertPoint(point *Point) error {
 	id := point.ID
@@ -73,6 +94,41 @@ func (q *QdrantStore) UpsertPoint(point *Point) error {
 				},
 			},
 		},
+	}
+
+	return q.put("/collections/"+q.collection+"/points", body)
+}
+
+// UpsertPoints creates or updates multiple points in the collection in a single request.
+func (q *QdrantStore) UpsertPoints(points []*Point) error {
+	if len(points) == 0 {
+		return nil
+	}
+
+	rawPoints := make([]map[string]any, 0, len(points))
+	for _, point := range points {
+		id := point.ID
+		if id == "" {
+			id = FilePathToID(point.FilePath)
+		}
+		rawPoints = append(rawPoints, map[string]any{
+			"id":     id,
+			"vector": point.Vector,
+			"payload": map[string]any{
+				"summary":          point.Summary,
+				"file_path":        point.FilePath,
+				"file_hash":        point.FileHash,
+				"type":             point.Type,
+				"responsibilities": point.Responsibilities,
+				"domain":           point.Domain,
+				"language":         point.Language,
+				"indexed_at":       point.IndexedAt.Format(time.RFC3339),
+			},
+		})
+	}
+
+	body := map[string]any{
+		"points": rawPoints,
 	}
 
 	return q.put("/collections/"+q.collection+"/points", body)

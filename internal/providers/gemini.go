@@ -113,7 +113,7 @@ func (g *GeminiProvider) retryOnRateLimit(fn func(ctx context.Context) error) er
 			return nil
 		}
 
-		if !isRateLimitError(lastErr) {
+		if !isRetryableError(lastErr) {
 			return lastErr
 		}
 
@@ -125,15 +125,17 @@ func (g *GeminiProvider) retryOnRateLimit(fn func(ctx context.Context) error) er
 	return lastErr
 }
 
-// isRateLimitError checks if the error is a rate limit or resource exhaustion error.
-func isRateLimitError(err error) bool {
+// isRetryableError checks if the error is a rate limit, resource exhaustion, or temporary unavailability error.
+func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "503") ||
 		strings.Contains(msg, "rate limit") ||
 		strings.Contains(msg, "resource exhausted") ||
 		strings.Contains(msg, "resource_exhausted") ||
-		strings.Contains(msg, "quota")
+		strings.Contains(msg, "quota") ||
+		strings.Contains(msg, "unavailable")
 }

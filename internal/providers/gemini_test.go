@@ -208,7 +208,7 @@ func TestNoRetryOnNonRateLimitError(t *testing.T) {
 	}
 }
 
-func TestIsRateLimitError(t *testing.T) {
+func TestIsRetryableError(t *testing.T) {
 	tests := []struct {
 		err  error
 		want bool
@@ -218,14 +218,16 @@ func TestIsRateLimitError(t *testing.T) {
 		{fmt.Errorf("rate limit exceeded"), true},
 		{fmt.Errorf("RESOURCE_EXHAUSTED"), true},
 		{fmt.Errorf("quota exceeded"), true},
+		{fmt.Errorf("Error 503, Message: high demand, Status: UNAVAILABLE"), true},
+		{fmt.Errorf("service unavailable"), true},
 		{fmt.Errorf("invalid API key"), false},
 		{fmt.Errorf("network error"), false},
 	}
 
 	for _, tt := range tests {
-		got := isRateLimitError(tt.err)
+		got := isRetryableError(tt.err)
 		if got != tt.want {
-			t.Errorf("isRateLimitError(%v) = %v, want %v", tt.err, got, tt.want)
+			t.Errorf("isRetryableError(%v) = %v, want %v", tt.err, got, tt.want)
 		}
 	}
 }

@@ -23,6 +23,7 @@ type ProjectConfig struct {
 type IndexerConfig struct {
 	MaxFileSize    int64    `yaml:"max_file_size"`
 	IgnorePatterns []string `yaml:"ignore_patterns"`
+	Workers        int      `yaml:"workers"`
 }
 
 type LLMConfig struct {
@@ -80,6 +81,9 @@ func expandEnvVars(s string) string {
 func setDefaults(cfg *Config) {
 	if cfg.Indexer.MaxFileSize == 0 {
 		cfg.Indexer.MaxFileSize = DefaultMaxFileSize
+	}
+	if cfg.Indexer.Workers <= 0 {
+		cfg.Indexer.Workers = 2
 	}
 }
 

@@ -106,6 +106,9 @@ storage:
 	if cfg.Indexer.MaxFileSize != DefaultMaxFileSize {
 		t.Errorf("default max_file_size = %d, want %d", cfg.Indexer.MaxFileSize, DefaultMaxFileSize)
 	}
+	if cfg.Indexer.Workers != 2 {
+		t.Errorf("default workers = %d, want %d", cfg.Indexer.Workers, 2)
+	}
 }
 
 func TestLoad_EnvVarSubstitution(t *testing.T) {

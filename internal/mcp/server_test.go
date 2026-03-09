@@ -22,7 +22,9 @@ type mockStore struct {
 }
 
 func (m *mockStore) EnsureCollection() error                    { return nil }
+func (m *mockStore) DeleteCollection() error                    { return nil }
 func (m *mockStore) UpsertPoint(point *store.Point) error       { return nil }
+func (m *mockStore) UpsertPoints(points []*store.Point) error   { return nil }
 func (m *mockStore) GetAllFilePoints() ([]*store.Point, error)  { return nil, nil }
 func (m *mockStore) DeletePoints(ids []string) error            { return nil }
 

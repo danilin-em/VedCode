@@ -169,6 +169,72 @@ func TestUpsertPoint_UsesProvidedID(t *testing.T) {
 	}
 }
 
+func TestUpsertPoints(t *testing.T) {
+	var receivedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"result":{"status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	err := s.UpsertPoints([]*Point{
+		{
+			Vector:   []float32{0.1, 0.2},
+			Summary:  "First file",
+			FilePath: "src/a.go",
+			FileHash: "hash1",
+			Type:     "file",
+			Language: "go",
+			IndexedAt: now,
+		},
+		{
+			Vector:   []float32{0.3, 0.4},
+			Summary:  "Second file",
+			FilePath: "src/b.go",
+			FileHash: "hash2",
+			Type:     "file",
+			Language: "go",
+			IndexedAt: now,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertPoints failed: %v", err)
+	}
+
+	points := receivedBody["points"].([]any)
+	if len(points) != 2 {
+		t.Fatalf("expected 2 points, got %d", len(points))
+	}
+
+	p1 := points[0].(map[string]any)
+	p1Payload := p1["payload"].(map[string]any)
+	if p1Payload["file_path"] != "src/a.go" {
+		t.Errorf("expected file_path src/a.go, got %v", p1Payload["file_path"])
+	}
+
+	p2 := points[1].(map[string]any)
+	p2Payload := p2["payload"].(map[string]any)
+	if p2Payload["file_path"] != "src/b.go" {
+		t.Errorf("expected file_path src/b.go, got %v", p2Payload["file_path"])
+	}
+}
+
+func TestUpsertPoints_Empty(t *testing.T) {
+	s := NewQdrantStore("http://localhost:6333", "vedcode_", "test")
+	err := s.UpsertPoints([]*Point{})
+	if err != nil {
+		t.Fatalf("UpsertPoints with empty slice should not error: %v", err)
+	}
+}
+
 func TestGetAllFilePoints(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
