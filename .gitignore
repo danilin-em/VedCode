@@ -1,0 +1,31 @@
+# Binaries
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build/test artifacts
+*.test
+*.out
+cover.out
+
+# VedCode generated data
+.vedcode/
+
+# VedCode local config (contains API key references)
+.vedcode.yml
+
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.mcp.json
+
+# OS
+.DS_Store
+Thumbs.db
