@@ -15,6 +15,23 @@ import (
 	"VedCode/internal/store"
 )
 
+const serverInstructions = `VedCode is a semantic code navigation server. It indexes project files and provides AI-friendly semantic search over the codebase.
+
+WHEN TO USE:
+- Use get_project_overview FIRST when you need to understand a new or unfamiliar project
+- Use search_code to find files by intent or concept (e.g. "authentication logic", "database migrations", "error handling middleware") — this is semantic search, not keyword search
+- Use get_summary to get detailed information about a specific file you already know the path of
+
+RECOMMENDED WORKFLOW:
+1. Start with get_project_overview to understand the project architecture
+2. Use search_code with natural language queries to find relevant files
+3. Use get_summary on specific files to get their responsibilities and domain
+
+TIPS:
+- search_code works best with descriptive queries about what the code does, not exact filenames
+- If search returns no useful results, try rephrasing the query with different terms
+- get_project_overview is cheap and fast — use it liberally when orienting in a codebase`
+
 // EmbeddingProvider abstracts the embedding API for search queries.
 type EmbeddingProvider interface {
 	EmbedContent(text string) ([]float32, error)
@@ -40,6 +57,7 @@ func NewServer(st store.Store, provider EmbeddingProvider, rootPath string) *Ser
 		"VedCode",
 		"1.0.0",
 		server.WithToolCapabilities(false),
+		server.WithInstructions(serverInstructions),
 	)
 
 	s.registerTools()
