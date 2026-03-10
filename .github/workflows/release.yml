@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build binaries
+        run: |
+          set -e
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+          )
+          mkdir -p dist
+          for platform in "${platforms[@]}"; do
+            os="${platform%/*}"
+            arch="${platform#*/}"
+            name="vedcode-${os}-${arch}"
+            echo "Building ${name}..."
+            GOOS="${os}" GOARCH="${arch}" go build -o "dist/${name}" ./cmd/vedcode/
+            tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+            rm "dist/${name}"
+          done
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/*.tar.gz --generate-notes
