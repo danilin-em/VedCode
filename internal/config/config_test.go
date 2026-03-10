@@ -17,10 +17,6 @@ func writeTestConfig(t *testing.T, content string) string {
 }
 
 const validConfig = `
-project:
-  name: "my-app"
-  root_path: "."
-
 indexer:
   max_file_size: 2097152
   ignore_patterns:
@@ -47,11 +43,11 @@ func TestLoad_ValidConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Project.Name != "my-app" {
-		t.Errorf("project.name = %q, want %q", cfg.Project.Name, "my-app")
+	if cfg.Project.Name == "" {
+		t.Error("project.name should be computed from cwd, got empty")
 	}
-	if cfg.Project.RootPath != "." {
-		t.Errorf("project.root_path = %q, want %q", cfg.Project.RootPath, ".")
+	if cfg.Project.RootPath == "" {
+		t.Error("project.root_path should be computed from cwd, got empty")
 	}
 	if cfg.Indexer.MaxFileSize != 2097152 {
 		t.Errorf("indexer.max_file_size = %d, want %d", cfg.Indexer.MaxFileSize, 2097152)
@@ -84,9 +80,6 @@ func TestLoad_ValidConfig(t *testing.T) {
 
 func TestLoad_DefaultMaxFileSize(t *testing.T) {
 	yml := `
-project:
-  name: "app"
-  root_path: "."
 llm:
   provider: "gemini"
   api_key: "key"
@@ -115,9 +108,6 @@ func TestLoad_EnvVarSubstitution(t *testing.T) {
 	t.Setenv("TEST_VEDCODE_API_KEY", "secret-from-env")
 
 	yml := `
-project:
-  name: "app"
-  root_path: "."
 llm:
   provider: "gemini"
   api_key: "${TEST_VEDCODE_API_KEY}"
@@ -143,9 +133,6 @@ func TestLoad_EnvVarNotSet(t *testing.T) {
 	os.Unsetenv("NONEXISTENT_VAR_VEDCODE")
 
 	yml := `
-project:
-  name: "app"
-  root_path: "."
 llm:
   provider: "gemini"
   api_key: "${NONEXISTENT_VAR_VEDCODE}"
@@ -175,45 +162,8 @@ func TestLoad_ValidationErrors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "missing project.name",
-			yml: `
-project:
-  root_path: "."
-llm:
-  provider: "g"
-  api_key: "k"
-  model: "m"
-  embedding_model: "e"
-storage:
-  type: "q"
-  url: "http://x"
-  collection_prefix: "p"
-`,
-			wantErr: "project.name is required",
-		},
-		{
-			name: "missing project.root_path",
-			yml: `
-project:
-  name: "app"
-llm:
-  provider: "g"
-  api_key: "k"
-  model: "m"
-  embedding_model: "e"
-storage:
-  type: "q"
-  url: "http://x"
-  collection_prefix: "p"
-`,
-			wantErr: "project.root_path is required",
-		},
-		{
 			name: "missing llm.provider",
 			yml: `
-project:
-  name: "app"
-  root_path: "."
 llm:
   api_key: "k"
   model: "m"
@@ -228,9 +178,6 @@ storage:
 		{
 			name: "missing llm.api_key",
 			yml: `
-project:
-  name: "app"
-  root_path: "."
 llm:
   provider: "g"
   model: "m"
@@ -245,9 +192,6 @@ storage:
 		{
 			name: "missing storage.url",
 			yml: `
-project:
-  name: "app"
-  root_path: "."
 llm:
   provider: "g"
   api_key: "k"
@@ -287,5 +231,22 @@ func TestLoad_InvalidYAML(t *testing.T) {
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestPathToName(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/home/evgenii/Projects/VedCode", "home-evgenii-Projects-VedCode"},
+		{"/usr/local/src", "usr-local-src"},
+		{"/single", "single"},
+	}
+	for _, tt := range tests {
+		got := pathToName(tt.path)
+		if got != tt.want {
+			t.Errorf("pathToName(%q) = %q, want %q", tt.path, got, tt.want)
+		}
 	}
 }

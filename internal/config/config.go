@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Project ProjectConfig `yaml:"project"`
+	Project ProjectConfig `yaml:"-"`
 	Indexer IndexerConfig `yaml:"indexer"`
 	LLM     LLMConfig     `yaml:"llm"`
 	Storage StorageConfig `yaml:"storage"`
@@ -58,6 +59,14 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
+	// Compute project config from current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getting working directory: %w", err)
+	}
+	cfg.Project.RootPath = cwd
+	cfg.Project.Name = pathToName(cwd)
+
 	setDefaults(&cfg)
 
 	if err := validate(&cfg); err != nil {
@@ -87,13 +96,14 @@ func setDefaults(cfg *Config) {
 	}
 }
 
+// pathToName converts an absolute path to a safe identifier.
+// e.g. "/home/evgenii/Projects/VedCode" → "home-evgenii-Projects-VedCode"
+func pathToName(absPath string) string {
+	name := strings.TrimPrefix(absPath, "/")
+	return strings.ReplaceAll(name, "/", "-")
+}
+
 func validate(cfg *Config) error {
-	if cfg.Project.Name == "" {
-		return fmt.Errorf("config validation: project.name is required")
-	}
-	if cfg.Project.RootPath == "" {
-		return fmt.Errorf("config validation: project.root_path is required")
-	}
 	if cfg.LLM.Provider == "" {
 		return fmt.Errorf("config validation: llm.provider is required")
 	}
