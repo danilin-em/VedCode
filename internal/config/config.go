@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -44,22 +46,50 @@ const DefaultMaxFileSize = 1048576 // 1 MB
 
 var envVarRegexp = regexp.MustCompile(`\$\{(\w+)\}`)
 
-// Load reads and parses .vedcode.yml from the given path,
-// substitutes environment variables, sets defaults, and validates.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading config file: %w", err)
+// Load reads ~/.vedcode.yml (global defaults) and the project config,
+// merges them (project overrides home; ignore_patterns are appended),
+// sets defaults, and validates.
+func Load(projectPath string) (*Config, error) {
+	homePath := ""
+	if dir, err := os.UserHomeDir(); err == nil {
+		homePath = filepath.Join(dir, ".vedcode.yml")
+	}
+	return loadWithPaths(homePath, projectPath)
+}
+
+func loadWithPaths(homePath, projectPath string) (*Config, error) {
+	homeCfg, homeErr := loadFile(homePath)
+	projectCfg, projectErr := loadFile(projectPath)
+
+	// If both files are missing, return a clear error
+	if homeCfg == nil && projectCfg == nil {
+		if projectErr != nil && !errors.Is(projectErr, os.ErrNotExist) {
+			return nil, projectErr
+		}
+		if homeErr != nil && !errors.Is(homeErr, os.ErrNotExist) {
+			return nil, homeErr
+		}
+		return nil, fmt.Errorf("no config found: create ~/.vedcode.yml or %s", projectPath)
 	}
 
-	expanded := expandEnvVars(string(data))
-
-	var cfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file: %w", err)
+	// If one file had a parse error (not just missing), report it
+	if homeCfg == nil && homeErr != nil && !errors.Is(homeErr, os.ErrNotExist) {
+		return nil, homeErr
+	}
+	if projectCfg == nil && projectErr != nil && !errors.Is(projectErr, os.ErrNotExist) {
+		return nil, projectErr
 	}
 
-	// Compute project config from current working directory
+	var cfg *Config
+	switch {
+	case homeCfg != nil && projectCfg != nil:
+		cfg = merge(homeCfg, projectCfg)
+	case homeCfg != nil:
+		cfg = homeCfg
+	default:
+		cfg = projectCfg
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("getting working directory: %w", err)
@@ -67,13 +97,77 @@ func Load(path string) (*Config, error) {
 	cfg.Project.RootPath = cwd
 	cfg.Project.Name = pathToName(cwd)
 
-	setDefaults(&cfg)
+	setDefaults(cfg)
 
-	if err := validate(&cfg); err != nil {
+	if err := validate(cfg); err != nil {
 		return nil, err
 	}
 
+	return cfg, nil
+}
+
+// loadFile reads a single YAML config file with env var substitution.
+// Returns (nil, os.ErrNotExist) if file doesn't exist.
+func loadFile(path string) (*Config, error) {
+	if path == "" {
+		return nil, os.ErrNotExist
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %s: %w", path, err)
+	}
+	expanded := expandEnvVars(string(data))
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file %s: %w", path, err)
+	}
 	return &cfg, nil
+}
+
+// merge combines home and project configs.
+// Project values override home values; ignore_patterns are appended.
+func merge(home, project *Config) *Config {
+	cfg := *home
+
+	// LLM: override non-zero fields
+	if project.LLM.Provider != "" {
+		cfg.LLM.Provider = project.LLM.Provider
+	}
+	if project.LLM.APIKey != "" {
+		cfg.LLM.APIKey = project.LLM.APIKey
+	}
+	if project.LLM.Model != "" {
+		cfg.LLM.Model = project.LLM.Model
+	}
+	if project.LLM.EmbeddingModel != "" {
+		cfg.LLM.EmbeddingModel = project.LLM.EmbeddingModel
+	}
+
+	// Storage: override non-zero fields
+	if project.Storage.Type != "" {
+		cfg.Storage.Type = project.Storage.Type
+	}
+	if project.Storage.URL != "" {
+		cfg.Storage.URL = project.Storage.URL
+	}
+	if project.Storage.CollectionPrefix != "" {
+		cfg.Storage.CollectionPrefix = project.Storage.CollectionPrefix
+	}
+
+	// Indexer: override non-zero fields
+	if project.Indexer.MaxFileSize != 0 {
+		cfg.Indexer.MaxFileSize = project.Indexer.MaxFileSize
+	}
+	if project.Indexer.Workers != 0 {
+		cfg.Indexer.Workers = project.Indexer.Workers
+	}
+
+	// IgnorePatterns: append project patterns to home patterns
+	if len(project.Indexer.IgnorePatterns) > 0 {
+		cfg.Indexer.IgnorePatterns = append(cfg.Indexer.IgnorePatterns, project.Indexer.IgnorePatterns...)
+	}
+
+	return &cfg
 }
 
 // expandEnvVars replaces ${VAR_NAME} patterns with environment variable values.

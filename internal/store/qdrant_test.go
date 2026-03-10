@@ -465,8 +465,8 @@ func TestSearch_DefaultLimit(t *testing.T) {
 
 func TestCollectionName(t *testing.T) {
 	s := NewQdrantStore("http://localhost:6333", "vedcode_", "my-app")
-	if s.collection != "vedcode_project_my-app" {
-		t.Errorf("expected collection name vedcode_project_my-app, got %s", s.collection)
+	if s.collection != "vedcode_my-app" {
+		t.Errorf("expected collection name vedcode_my-app, got %s", s.collection)
 	}
 }
 

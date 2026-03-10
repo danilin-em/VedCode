@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +39,7 @@ storage:
 func TestLoad_ValidConfig(t *testing.T) {
 	path := writeTestConfig(t, validConfig)
 
-	cfg, err := Load(path)
+	cfg, err := loadWithPaths("", path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +93,7 @@ storage:
 `
 	path := writeTestConfig(t, yml)
 
-	cfg, err := Load(path)
+	cfg, err := loadWithPaths("", path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +121,7 @@ storage:
 `
 	path := writeTestConfig(t, yml)
 
-	cfg, err := Load(path)
+	cfg, err := loadWithPaths("", path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,7 +146,7 @@ storage:
 `
 	path := writeTestConfig(t, yml)
 
-	cfg, err := Load(path)
+	cfg, err := loadWithPaths("", path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +209,7 @@ storage:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeTestConfig(t, tt.yml)
-			_, err := Load(path)
+			_, err := loadWithPaths("", path)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -220,7 +221,7 @@ storage:
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
-	_, err := Load("/nonexistent/path/.vedcode.yml")
+	_, err := loadWithPaths("", "/nonexistent/path/.vedcode.yml")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -228,7 +229,7 @@ func TestLoad_FileNotFound(t *testing.T) {
 
 func TestLoad_InvalidYAML(t *testing.T) {
 	path := writeTestConfig(t, "{{invalid yaml}}")
-	_, err := Load(path)
+	_, err := loadWithPaths("", path)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
 	}
@@ -248,5 +249,131 @@ func TestPathToName(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("pathToName(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+// --- New tests for home/project config merging ---
+
+const homeConfig = `
+indexer:
+  max_file_size: 1048576
+  workers: 4
+  ignore_patterns:
+    - "*.log"
+    - "node_modules/*"
+
+llm:
+  provider: "gemini"
+  api_key: "home-api-key"
+  model: "gemini-2.5-flash"
+  embedding_model: "gemini-embedding-001"
+
+storage:
+  type: "qdrant"
+  url: "http://localhost:6333"
+  collection_prefix: "vedcode_"
+`
+
+func TestLoad_HomeConfigOnly(t *testing.T) {
+	homePath := writeTestConfig(t, homeConfig)
+
+	cfg, err := loadWithPaths(homePath, "/nonexistent/project/.vedcode.yml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.APIKey != "home-api-key" {
+		t.Errorf("api_key = %q, want %q", cfg.LLM.APIKey, "home-api-key")
+	}
+	if cfg.Indexer.Workers != 4 {
+		t.Errorf("workers = %d, want %d", cfg.Indexer.Workers, 4)
+	}
+}
+
+func TestLoad_ProjectConfigOnly(t *testing.T) {
+	projectPath := writeTestConfig(t, validConfig)
+
+	cfg, err := loadWithPaths("/nonexistent/home/.vedcode.yml", projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.APIKey != "test-key-123" {
+		t.Errorf("api_key = %q, want %q", cfg.LLM.APIKey, "test-key-123")
+	}
+}
+
+func TestLoad_BothConfigs_ProjectOverridesHome(t *testing.T) {
+	homePath := writeTestConfig(t, homeConfig)
+
+	projectYml := `
+indexer:
+  workers: 8
+
+llm:
+  model: "gemini-2.0-pro"
+`
+	projectPath := writeTestConfig(t, projectYml)
+
+	cfg, err := loadWithPaths(homePath, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Overridden by project
+	if cfg.Indexer.Workers != 8 {
+		t.Errorf("workers = %d, want %d", cfg.Indexer.Workers, 8)
+	}
+	if cfg.LLM.Model != "gemini-2.0-pro" {
+		t.Errorf("model = %q, want %q", cfg.LLM.Model, "gemini-2.0-pro")
+	}
+
+	// Inherited from home
+	if cfg.LLM.APIKey != "home-api-key" {
+		t.Errorf("api_key = %q, want %q", cfg.LLM.APIKey, "home-api-key")
+	}
+	if cfg.LLM.Provider != "gemini" {
+		t.Errorf("provider = %q, want %q", cfg.LLM.Provider, "gemini")
+	}
+	if cfg.Storage.URL != "http://localhost:6333" {
+		t.Errorf("storage.url = %q, want %q", cfg.Storage.URL, "http://localhost:6333")
+	}
+}
+
+func TestLoad_IgnorePatternsAppended(t *testing.T) {
+	homePath := writeTestConfig(t, homeConfig)
+
+	projectYml := `
+indexer:
+  ignore_patterns:
+    - "*.min.js"
+    - "dist/*"
+`
+	projectPath := writeTestConfig(t, projectYml)
+
+	cfg, err := loadWithPaths(homePath, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Home patterns: *.log, node_modules/*
+	// Project patterns: *.min.js, dist/*
+	// Result: all 4 appended
+	want := []string{"*.log", "node_modules/*", "*.min.js", "dist/*"}
+	if len(cfg.Indexer.IgnorePatterns) != len(want) {
+		t.Fatalf("ignore_patterns length = %d, want %d: %v", len(cfg.Indexer.IgnorePatterns), len(want), cfg.Indexer.IgnorePatterns)
+	}
+	for i, p := range want {
+		if cfg.Indexer.IgnorePatterns[i] != p {
+			t.Errorf("ignore_patterns[%d] = %q, want %q", i, cfg.Indexer.IgnorePatterns[i], p)
+		}
+	}
+}
+
+func TestLoad_NeitherConfig(t *testing.T) {
+	_, err := loadWithPaths("/nonexistent/home/.vedcode.yml", "/nonexistent/project/.vedcode.yml")
+	if err == nil {
+		t.Fatal("expected error when neither config exists")
+	}
+	if !strings.Contains(err.Error(), "no config found") {
+		t.Errorf("error = %q, want to contain 'no config found'", err.Error())
 	}
 }

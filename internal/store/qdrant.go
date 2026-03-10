@@ -20,7 +20,7 @@ type QdrantStore struct {
 func NewQdrantStore(url, collectionPrefix, projectName string) *QdrantStore {
 	return &QdrantStore{
 		baseURL:    url,
-		collection: collectionPrefix + "project_" + projectName,
+		collection: collectionPrefix + projectName,
 		client:     &http.Client{Timeout: 30 * time.Second},
 	}
 }
