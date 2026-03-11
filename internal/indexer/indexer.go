@@ -62,6 +62,269 @@ const dirAnalysisSchema = `{
 	"propertyOrdering": ["summary", "responsibilities", "domain"]
 }`
 
+// fileInfo holds lightweight file data in memory for directory analysis.
+type fileInfo struct {
+	filePath string
+	fileHash string
+	summary  string
+}
+
+// dirTracker coordinates interleaved file and directory indexing.
+// Directory analysis starts automatically when all children (files + subdirs) are ready.
+type dirTracker struct {
+	mu          sync.Mutex
+	pending     map[string]int          // dir → remaining children (files + subdirs)
+	fileInfos   map[string][]*fileInfo  // dir → direct child file infos
+	childDirs   map[string][]string     // dir → direct child subdirectories
+	dirSummary  map[string]string       // dir → summary (filled after analysis)
+	dirHash     map[string]string       // dir → computed hash
+	allDirs     map[string]bool         // all tracked directories
+	existingDir map[string]*store.Point // existing dir points from Qdrant
+
+	db       store.Store
+	llm      providers.TextGenerator
+	embedder providers.EmbeddingProvider
+	cfg      *config.Config
+	overview string
+	sem      chan struct{}
+	wg       *sync.WaitGroup
+	logger   *slog.Logger
+
+	// Shared progress counter (files + dirs) and total items count
+	progress   *atomic.Int64
+	totalItems int
+
+	indexed atomic.Int64
+	skipped atomic.Int64
+	errors  atomic.Int64
+}
+
+// newDirTracker creates a dirTracker with pre-computed dependency counts.
+func newDirTracker(
+	files []string,
+	existingDirPoints []*store.Point,
+	db store.Store,
+	llm providers.TextGenerator,
+	embedder providers.EmbeddingProvider,
+	cfg *config.Config,
+	overview string,
+	sem chan struct{},
+	wg *sync.WaitGroup,
+	progress *atomic.Int64,
+	totalItems int,
+	logger *slog.Logger,
+) *dirTracker {
+	allDirs := extractUniqueDirs(files)
+
+	// Count direct child files per directory
+	pending := make(map[string]int, len(allDirs))
+	for _, f := range files {
+		dir := filepath.Dir(f)
+		if dir == "." {
+			continue // root-level files don't belong to any tracked directory
+		}
+		pending[dir]++
+	}
+
+	// Build childDirs map and count direct child subdirectories
+	childDirs := make(map[string][]string, len(allDirs))
+	for dir := range allDirs {
+		parent := filepath.Dir(dir)
+		if parent == "." {
+			continue
+		}
+		if allDirs[parent] {
+			childDirs[parent] = append(childDirs[parent], dir)
+			pending[parent]++
+		}
+	}
+
+	// Build existing dir points map
+	existingDir := make(map[string]*store.Point, len(existingDirPoints))
+	for _, p := range existingDirPoints {
+		existingDir[p.FilePath] = p
+	}
+
+	return &dirTracker{
+		pending:     pending,
+		fileInfos:   make(map[string][]*fileInfo),
+		childDirs:   childDirs,
+		dirSummary:  make(map[string]string),
+		dirHash:     make(map[string]string),
+		allDirs:     allDirs,
+		existingDir: existingDir,
+		db:          db,
+		llm:         llm,
+		embedder:    embedder,
+		cfg:         cfg,
+		overview:    overview,
+		sem:         sem,
+		wg:          wg,
+		progress:    progress,
+		totalItems:  totalItems,
+		logger:      logger,
+	}
+}
+
+// fileCompleted is called when a file is indexed or skipped (unchanged).
+func (t *dirTracker) fileCompleted(relPath, summary, hash string) {
+	dir := filepath.Dir(relPath)
+	if dir == "." {
+		return // root-level file, no directory to track
+	}
+
+	t.mu.Lock()
+	t.fileInfos[dir] = append(t.fileInfos[dir], &fileInfo{
+		filePath: relPath,
+		fileHash: hash,
+		summary:  summary,
+	})
+	t.pending[dir]--
+	ready := t.pending[dir] == 0
+	t.mu.Unlock()
+
+	if ready {
+		t.tryAnalyzeDir(dir)
+	}
+}
+
+// fileFailed is called when a file fails indexing (graceful degradation).
+func (t *dirTracker) fileFailed(relPath string) {
+	dir := filepath.Dir(relPath)
+	if dir == "." {
+		return
+	}
+
+	t.mu.Lock()
+	t.pending[dir]--
+	ready := t.pending[dir] == 0
+	t.mu.Unlock()
+
+	if ready {
+		t.tryAnalyzeDir(dir)
+	}
+}
+
+// tryAnalyzeDir checks cache and launches directory analysis when ready.
+func (t *dirTracker) tryAnalyzeDir(dirPath string) {
+	t.mu.Lock()
+	newHash := computeDirHash(dirPath, t.fileInfos, t.childDirs, t.dirHash)
+	t.dirHash[dirPath] = newHash
+
+	// Check if directory is unchanged
+	if existing, ok := t.existingDir[dirPath]; ok && existing.FileHash == newHash {
+		t.dirSummary[dirPath] = existing.Summary
+		t.mu.Unlock()
+
+		t.logger.Debug("dir skipped (unchanged)", "dir", dirPath, "hash", newHash)
+		t.skipped.Add(1)
+		t.notifyParent(dirPath)
+		return
+	}
+
+	// Collect data for LLM prompt while holding the lock
+	filesSummaries := buildFilesSummariesText(t.fileInfos[dirPath])
+	subdirsSummaries := buildSubdirsSummariesText(t.childDirs[dirPath], t.dirSummary)
+	t.mu.Unlock()
+
+	// Launch analysis in a goroutine
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		t.sem <- struct{}{}
+		defer func() { <-t.sem }()
+
+		n := t.progress.Add(1)
+		log.Printf("[%d/%d] Analyzing dir %s", n, t.totalItems, dirPath)
+		t.logger.Debug("dir indexing started", "dir", dirPath, "index", n, "total", t.totalItems, "hash", newHash)
+		dirStart := time.Now()
+
+		dirPrompt := prompts.Render(t.cfg.Prompts.DirectoryAnalysis, map[string]string{
+			"DIR_PATH":          dirPath,
+			"PROJECT_OVERVIEW":  t.overview,
+			"FILES_SUMMARIES":   filesSummaries,
+			"SUBDIRS_SUMMARIES": subdirsSummaries,
+		})
+
+		response, err := t.llm.GenerateJSON(dirPrompt, dirAnalysisSchema)
+		if err != nil {
+			log.Printf("Error analyzing dir %s: %v", dirPath, err)
+			t.errors.Add(1)
+			t.notifyParent(dirPath)
+			return
+		}
+
+		analysis, err := parseDirAnalysis(response)
+		if err != nil {
+			log.Printf("Error parsing dir analysis for %s: %v", dirPath, err)
+			t.errors.Add(1)
+			t.notifyParent(dirPath)
+			return
+		}
+
+		embedding, err := t.embedder.EmbedContent(analysis.Summary)
+		if err != nil {
+			log.Printf("Error embedding dir %s: %v", dirPath, err)
+			t.errors.Add(1)
+			t.notifyParent(dirPath)
+			return
+		}
+
+		point := &store.Point{
+			ID:               store.FilePathToID("dir:" + dirPath),
+			Vector:           embedding,
+			Summary:          analysis.Summary,
+			FilePath:         dirPath,
+			FileHash:         newHash,
+			Type:             "directory",
+			Responsibilities: analysis.Responsibilities,
+			Domain:           analysis.Domain,
+			IndexedAt:        time.Now(),
+		}
+
+		if err := t.db.UpsertPoint(point); err != nil {
+			log.Printf("Error saving dir %s: %v", dirPath, err)
+			t.errors.Add(1)
+			t.notifyParent(dirPath)
+			return
+		}
+
+		t.logger.Debug("dir indexing completed",
+			"dir", dirPath,
+			"duration", time.Since(dirStart),
+		)
+
+		t.mu.Lock()
+		t.dirSummary[dirPath] = analysis.Summary
+		t.mu.Unlock()
+
+		t.indexed.Add(1)
+		t.notifyParent(dirPath)
+	}()
+}
+
+// notifyParent signals that a child directory is done.
+func (t *dirTracker) notifyParent(dirPath string) {
+	parent := filepath.Dir(dirPath)
+	if parent == "." || !t.allDirs[parent] {
+		return
+	}
+
+	t.mu.Lock()
+	t.pending[parent]--
+	ready := t.pending[parent] == 0
+	t.mu.Unlock()
+
+	if ready {
+		t.tryAnalyzeDir(parent)
+	}
+}
+
+// results returns the final directory indexing counters.
+func (t *dirTracker) results() (indexed, skipped, errors int) {
+	return int(t.indexed.Load()), int(t.skipped.Load()), int(t.errors.Load())
+}
+
 // Run executes the full indexing cycle for the project.
 func Run(configPath string, force bool, logger *slog.Logger) error {
 	cfg, err := config.Load(configPath)
@@ -226,8 +489,8 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		existingByPath[p.FilePath] = p
 	}
 
-	// --- Stage 2: File indexing ---
-	log.Println("\n--- Stage 2: File indexing ---")
+	// --- Stage 2: File & directory indexing (interleaved) ---
+	log.Println("\n--- Stage 2: File & directory indexing ---")
 	log.Printf("Using %d worker(s)", cfg.Indexer.Workers)
 
 	var indexedCount atomic.Int64
@@ -236,16 +499,31 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 	sem := make(chan struct{}, cfg.Indexer.Workers)
 	var wg sync.WaitGroup
-	totalFiles := len(walkResult.Files)
+	var progress atomic.Int64
 
-	for i, relPath := range walkResult.Files {
+	totalDirs := len(extractUniqueDirs(walkResult.Files))
+	totalItems := len(walkResult.Files) + totalDirs
+
+	// Create directory tracker — directories are analyzed automatically
+	// as soon as all their children (files + subdirs) are ready.
+	tracker := newDirTracker(
+		walkResult.Files, existingDirPoints,
+		db, llm, embedder, cfg, projectOverview,
+		sem, &wg, &progress, totalItems, logger,
+	)
+
+	log.Printf("Found %d items to analyze (%d files, %d dirs)", totalItems, len(walkResult.Files), totalDirs)
+
+	for _, relPath := range walkResult.Files {
 		absPath := filepath.Join(rootPath, relPath)
 
 		// Read file and compute hash before spawning goroutine (fast, allows early skip)
 		content, err := os.ReadFile(absPath)
 		if err != nil {
-			log.Printf("[%d/%d] Error reading %s: %v", i+1, totalFiles, relPath, err)
+			n := progress.Add(1)
+			log.Printf("[%d/%d] Error reading %s: %v", n, totalItems, relPath, err)
 			errorCount.Add(1)
+			tracker.fileFailed(relPath)
 			continue
 		}
 
@@ -255,21 +533,23 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		if existing, ok := existingByPath[relPath]; ok && existing.FileHash == hash {
 			logger.Debug("file skipped (unchanged)", "file", relPath, "hash", hash)
 			skippedCount++
+			tracker.fileCompleted(relPath, existing.Summary, existing.FileHash)
 			continue
 		}
 
 		// Acquire semaphore slot and launch worker
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(idx int, relPath string, content []byte, hash string) {
+		go func(relPath string, content []byte, hash string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			log.Printf("[%d/%d] Indexing %s", idx+1, totalFiles, relPath)
+			n := progress.Add(1)
+			log.Printf("[%d/%d] Indexing %s", n, totalItems, relPath)
 			logger.Debug("file indexing started",
 				"file", relPath,
-				"index", idx+1,
-				"total", totalFiles,
+				"index", n,
+				"total", totalItems,
 				"hash", hash,
 				"size", len(content),
 			)
@@ -283,15 +563,17 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 			response, err := llm.GenerateJSON(filePrompt, fileAnalysisSchema)
 			if err != nil {
-				log.Printf("[%d/%d] Error analyzing %s: %v", idx+1, totalFiles, relPath, err)
+				log.Printf("[%d/%d] Error analyzing %s: %v", n, totalItems, relPath, err)
 				errorCount.Add(1)
+				tracker.fileFailed(relPath)
 				return
 			}
 
 			analysis, err := parseAnalysis(response)
 			if err != nil {
-				log.Printf("[%d/%d] Error parsing analysis for %s: %v", idx+1, totalFiles, relPath, err)
+				log.Printf("[%d/%d] Error parsing analysis for %s: %v", n, totalItems, relPath, err)
 				errorCount.Add(1)
+				tracker.fileFailed(relPath)
 				return
 			}
 
@@ -305,8 +587,9 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			// Get embedding for the summary
 			embedding, err := embedder.EmbedContent(analysis.Summary)
 			if err != nil {
-				log.Printf("[%d/%d] Error embedding %s: %v", idx+1, totalFiles, relPath, err)
+				log.Printf("[%d/%d] Error embedding %s: %v", n, totalItems, relPath, err)
 				errorCount.Add(1)
+				tracker.fileFailed(relPath)
 				return
 			}
 
@@ -325,8 +608,9 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			}
 
 			if err := db.UpsertPoint(point); err != nil {
-				log.Printf("[%d/%d] Error saving %s: %v", idx+1, totalFiles, relPath, err)
+				log.Printf("[%d/%d] Error saving %s: %v", n, totalItems, relPath, err)
 				errorCount.Add(1)
+				tracker.fileFailed(relPath)
 				return
 			}
 
@@ -335,18 +619,13 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 				"duration", time.Since(fileStart),
 			)
 
+			tracker.fileCompleted(relPath, analysis.Summary, hash)
 			indexedCount.Add(1)
-		}(i, relPath, content, hash)
+		}(relPath, content, hash)
 	}
 	wg.Wait()
 
-	// --- Stage 3: Directory analysis ---
-	log.Println("\n--- Stage 3: Directory analysis ---")
-
-	dirIndexed, dirSkipped, dirErrors := indexDirectories(
-		db, llm, embedder, cfg, projectOverview,
-		walkResult.Files, existingDirPoints, logger,
-	)
+	dirIndexed, dirSkipped, dirErrors := tracker.results()
 
 	// --- Summary ---
 	log.Println("\n=== Indexing complete ===")
@@ -421,40 +700,23 @@ func extractUniqueDirs(files []string) map[string]bool {
 	return dirs
 }
 
-// buildDirOrder returns directories sorted bottom-up:
-// deeper directories (more path segments) come first.
-func buildDirOrder(dirs map[string]bool) []string {
-	order := make([]string, 0, len(dirs))
-	for d := range dirs {
-		order = append(order, d)
-	}
-	sort.Slice(order, func(i, j int) bool {
-		di := strings.Count(order[i], string(filepath.Separator))
-		dj := strings.Count(order[j], string(filepath.Separator))
-		if di != dj {
-			return di > dj
-		}
-		return order[i] < order[j]
-	})
-	return order
-}
 
 // computeDirHash computes a deterministic hash for a directory based on
 // sorted file hashes of direct children and dir hashes of direct subdirectories.
-func computeDirHash(dirPath string, filesByDir map[string][]*store.Point, dirHashCache map[string]string) string {
+func computeDirHash(dirPath string, fileInfos map[string][]*fileInfo, childDirs map[string][]string, dirHash map[string]string) string {
 	var parts []string
 
-	if files, ok := filesByDir[dirPath]; ok {
+	if files, ok := fileInfos[dirPath]; ok {
 		fileHashes := make([]string, 0, len(files))
 		for _, f := range files {
-			fileHashes = append(fileHashes, f.FileHash)
+			fileHashes = append(fileHashes, f.fileHash)
 		}
 		sort.Strings(fileHashes)
 		parts = append(parts, fileHashes...)
 	}
 
-	for subDir, h := range dirHashCache {
-		if filepath.Dir(subDir) == dirPath {
+	for _, subDir := range childDirs[dirPath] {
+		if h, ok := dirHash[subDir]; ok {
 			parts = append(parts, h)
 		}
 	}
@@ -465,26 +727,29 @@ func computeDirHash(dirPath string, filesByDir map[string][]*store.Point, dirHas
 }
 
 // buildFilesSummariesText formats file summaries for the LLM prompt.
-func buildFilesSummariesText(files []*store.Point) string {
+func buildFilesSummariesText(files []*fileInfo) string {
 	if len(files) == 0 {
 		return "(no files)"
 	}
 	var sb strings.Builder
 	for _, f := range files {
 		sb.WriteString("- ")
-		sb.WriteString(f.FilePath)
+		sb.WriteString(f.filePath)
 		sb.WriteString(": ")
-		sb.WriteString(f.Summary)
+		sb.WriteString(f.summary)
 		sb.WriteString("\n")
 	}
 	return sb.String()
 }
 
 // buildSubdirsSummariesText formats subdirectory summaries for the LLM prompt.
-func buildSubdirsSummariesText(parentDir string, dirSummaryCache map[string]string) string {
+func buildSubdirsSummariesText(childDirs []string, dirSummary map[string]string) string {
+	if len(childDirs) == 0 {
+		return "(no subdirectories)"
+	}
 	var lines []string
-	for dir, summary := range dirSummaryCache {
-		if filepath.Dir(dir) == parentDir {
+	for _, dir := range childDirs {
+		if summary, ok := dirSummary[dir]; ok {
 			lines = append(lines, "- "+dir+": "+summary)
 		}
 	}
@@ -495,131 +760,3 @@ func buildSubdirsSummariesText(parentDir string, dirSummaryCache map[string]stri
 	return strings.Join(lines, "\n")
 }
 
-// indexDirectories performs Stage 3: bottom-up directory analysis.
-func indexDirectories(
-	db store.Store,
-	llm providers.TextGenerator,
-	embedder providers.EmbeddingProvider,
-	cfg *config.Config,
-	projectOverview string,
-	files []string,
-	existingDirPoints []*store.Point,
-	logger *slog.Logger,
-) (indexed, skipped, errors int) {
-	// Load current file points from Qdrant (need their summaries and hashes)
-	allFilePoints, err := db.GetAllFilePoints()
-	if err != nil {
-		log.Printf("Stage 3: error loading file points: %v", err)
-		return 0, 0, 1
-	}
-
-	// Index file points by directory: dirPath → []Point (direct children only)
-	filesByDir := make(map[string][]*store.Point)
-	for _, p := range allFilePoints {
-		dir := filepath.Dir(p.FilePath)
-		if dir == "." {
-			dir = ""
-		}
-		filesByDir[dir] = append(filesByDir[dir], p)
-	}
-
-	// Build map of existing dir points: dirPath → Point
-	existingDirByPath := make(map[string]*store.Point, len(existingDirPoints))
-	for _, p := range existingDirPoints {
-		existingDirByPath[p.FilePath] = p
-	}
-
-	// Collect unique directories and sort bottom-up
-	allDirs := extractUniqueDirs(files)
-	orderedDirs := buildDirOrder(allDirs)
-
-	log.Printf("Found %d directories to analyze", len(orderedDirs))
-
-	// Cache of directory hashes: filled during bottom-up traversal
-	dirHashCache := make(map[string]string)
-	// Cache of directory summaries: for passing to parent directory analysis
-	dirSummaryCache := make(map[string]string)
-
-	totalDirs := len(orderedDirs)
-
-	for i, dirPath := range orderedDirs {
-		newHash := computeDirHash(dirPath, filesByDir, dirHashCache)
-		dirHashCache[dirPath] = newHash
-
-		// Check cache
-		if existing, ok := existingDirByPath[dirPath]; ok && existing.FileHash == newHash {
-			dirSummaryCache[dirPath] = existing.Summary
-			logger.Debug("dir skipped (unchanged)", "dir", dirPath, "hash", newHash)
-			skipped++
-			continue
-		}
-
-		log.Printf("[%d/%d] Analyzing %s", i+1, totalDirs, dirPath)
-		logger.Debug("dir indexing started",
-			"dir", dirPath,
-			"index", i+1,
-			"total", totalDirs,
-			"hash", newHash,
-		)
-		dirStart := time.Now()
-
-		filesSummaries := buildFilesSummariesText(filesByDir[dirPath])
-		subdirsSummaries := buildSubdirsSummariesText(dirPath, dirSummaryCache)
-
-		dirPrompt := prompts.Render(cfg.Prompts.DirectoryAnalysis, map[string]string{
-			"DIR_PATH":          dirPath,
-			"PROJECT_OVERVIEW":  projectOverview,
-			"FILES_SUMMARIES":   filesSummaries,
-			"SUBDIRS_SUMMARIES": subdirsSummaries,
-		})
-
-		response, err := llm.GenerateJSON(dirPrompt, dirAnalysisSchema)
-		if err != nil {
-			log.Printf("[%d/%d] Error analyzing %s: %v", i+1, totalDirs, dirPath, err)
-			errors++
-			continue
-		}
-
-		analysis, err := parseDirAnalysis(response)
-		if err != nil {
-			log.Printf("[%d/%d] Error parsing analysis for %s: %v", i+1, totalDirs, dirPath, err)
-			errors++
-			continue
-		}
-
-		embedding, err := embedder.EmbedContent(analysis.Summary)
-		if err != nil {
-			log.Printf("[%d/%d] Error embedding %s: %v", i+1, totalDirs, dirPath, err)
-			errors++
-			continue
-		}
-
-		point := &store.Point{
-			ID:               store.FilePathToID("dir:" + dirPath),
-			Vector:           embedding,
-			Summary:          analysis.Summary,
-			FilePath:         dirPath,
-			FileHash:         newHash,
-			Type:             "directory",
-			Responsibilities: analysis.Responsibilities,
-			Domain:           analysis.Domain,
-			IndexedAt:        time.Now(),
-		}
-
-		if err := db.UpsertPoint(point); err != nil {
-			log.Printf("[%d/%d] Error saving %s: %v", i+1, totalDirs, dirPath, err)
-			errors++
-			continue
-		}
-
-		logger.Debug("dir indexing completed",
-			"dir", dirPath,
-			"duration", time.Since(dirStart),
-		)
-
-		dirSummaryCache[dirPath] = analysis.Summary
-		indexed++
-	}
-
-	return indexed, skipped, errors
-}
