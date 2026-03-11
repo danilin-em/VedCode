@@ -18,11 +18,13 @@ type mockModels struct {
 	// captured arguments
 	lastModel    string
 	lastContents []*genai.Content
+	lastConfig   *genai.GenerateContentConfig
 }
 
-func (m *mockModels) GenerateContent(_ context.Context, model string, contents []*genai.Content, _ *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+func (m *mockModels) GenerateContent(_ context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 	m.lastModel = model
 	m.lastContents = contents
+	m.lastConfig = config
 	return m.generateResp, m.generateErr
 }
 
@@ -205,6 +207,53 @@ func TestNoRetryOnNonRateLimitError(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Errorf("call count = %d, want 1 (no retries for non-rate-limit errors)", callCount)
+	}
+}
+
+func TestGenerateJSON_Success(t *testing.T) {
+	jsonText := `{"name":"test","value":42}`
+	mock := &mockModels{
+		generateResp: &genai.GenerateContentResponse{
+			Candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							genai.NewPartFromText(jsonText),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+
+	schema := `{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"integer"}},"required":["name","value"]}`
+	result, err := provider.GenerateJSON("test prompt", schema)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != jsonText {
+		t.Errorf("got %q, want %q", result, jsonText)
+	}
+	if mock.lastConfig == nil {
+		t.Fatal("expected config to be set")
+	}
+	if mock.lastConfig.ResponseMIMEType != "application/json" {
+		t.Errorf("ResponseMIMEType = %q, want %q", mock.lastConfig.ResponseMIMEType, "application/json")
+	}
+	if mock.lastConfig.ResponseSchema == nil {
+		t.Error("expected ResponseSchema to be set")
+	}
+}
+
+func TestGenerateJSON_InvalidSchema(t *testing.T) {
+	mock := &mockModels{}
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+
+	_, err := provider.GenerateJSON("test prompt", "not valid json")
+	if err == nil {
+		t.Fatal("expected error for invalid schema, got nil")
 	}
 }
 

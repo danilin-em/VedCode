@@ -9,6 +9,7 @@ import (
 // TextGenerator generates text from a prompt.
 type TextGenerator interface {
 	GenerateContent(prompt string) (string, error)
+	GenerateJSON(prompt string, schema string) (string, error)
 }
 
 // EmbeddingProvider generates vector embeddings from text.

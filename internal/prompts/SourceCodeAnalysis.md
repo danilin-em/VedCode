@@ -19,15 +19,4 @@ Analyze the source code above and provide:
 3. **Domain** — The business domain or bounded context this file belongs to (e.g., Payments, Auth, Infrastructure, Configuration). Use a single word or short phrase.
 4. **Language** — The programming language of the file.
 
-## Output Format
-
-Respond strictly in the following JSON format with no additional text:
-
-```json
-{
-  "summary": "...",
-  "responsibilities": ["...", "..."],
-  "domain": "...",
-  "language": "..."
-}
-```
+Respond in JSON format.

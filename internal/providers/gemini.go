@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -73,6 +74,43 @@ func (g *GeminiProvider) GenerateContent(prompt string) (string, error) {
 	text := resp.Text()
 	if text == "" {
 		return "", fmt.Errorf("generating content: empty response")
+	}
+
+	return text, nil
+}
+
+// GenerateJSON sends a prompt to Gemini with a JSON response schema and returns the generated JSON string.
+func (g *GeminiProvider) GenerateJSON(prompt string, schema string) (string, error) {
+	var responseSchema genai.Schema
+	if err := json.Unmarshal([]byte(schema), &responseSchema); err != nil {
+		return "", fmt.Errorf("parsing response schema: %w", err)
+	}
+
+	contents := []*genai.Content{
+		genai.NewContentFromText(prompt, genai.RoleUser),
+	}
+
+	config := &genai.GenerateContentConfig{
+		ThinkingConfig: &genai.ThinkingConfig{
+			ThinkingBudget: genai.Ptr[int32](0),
+		},
+		ResponseMIMEType: "application/json",
+		ResponseSchema:   &responseSchema,
+	}
+
+	var resp *genai.GenerateContentResponse
+	err := g.retryOnRateLimit(func(ctx context.Context) error {
+		var apiErr error
+		resp, apiErr = g.models.GenerateContent(ctx, g.model, contents, config)
+		return apiErr
+	})
+	if err != nil {
+		return "", fmt.Errorf("generating JSON content: %w", err)
+	}
+
+	text := resp.Text()
+	if text == "" {
+		return "", fmt.Errorf("generating JSON content: empty response")
 	}
 
 	return text, nil

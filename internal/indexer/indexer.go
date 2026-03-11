@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +26,19 @@ type fileAnalysis struct {
 	Domain           string   `json:"domain"`
 	Language         string   `json:"language"`
 }
+
+// fileAnalysisSchema is the JSON schema for structured LLM responses.
+const fileAnalysisSchema = `{
+	"type": "object",
+	"properties": {
+		"summary": {"type": "string"},
+		"responsibilities": {"type": "array", "items": {"type": "string"}},
+		"domain": {"type": "string"},
+		"language": {"type": "string"}
+	},
+	"required": ["summary", "responsibilities", "domain", "language"],
+	"propertyOrdering": ["summary", "responsibilities", "domain", "language"]
+}`
 
 // Run executes the full indexing cycle for the project.
 func Run(configPath string, force bool) error {
@@ -202,7 +214,7 @@ func Run(configPath string, force bool) error {
 				return
 			}
 
-			response, err := llm.GenerateContent(filePrompt)
+			response, err := llm.GenerateJSON(filePrompt, fileAnalysisSchema)
 			if err != nil {
 				log.Printf("[%d/%d] Error analyzing %s: %v", idx+1, totalFiles, relPath, err)
 				errorCount.Add(1)
@@ -266,26 +278,10 @@ func sha256sum(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// parseAnalysis extracts the JSON block from the LLM response.
+// parseAnalysis parses the JSON response from the LLM.
 func parseAnalysis(response string) (*fileAnalysis, error) {
-	// Try to extract JSON from markdown code block
-	jsonStr := response
-	if start := strings.Index(response, "```json"); start != -1 {
-		jsonStr = response[start+7:]
-		if end := strings.Index(jsonStr, "```"); end != -1 {
-			jsonStr = jsonStr[:end]
-		}
-	} else if start := strings.Index(response, "```"); start != -1 {
-		jsonStr = response[start+3:]
-		if end := strings.Index(jsonStr, "```"); end != -1 {
-			jsonStr = jsonStr[:end]
-		}
-	}
-
-	jsonStr = strings.TrimSpace(jsonStr)
-
 	var analysis fileAnalysis
-	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
+	if err := json.Unmarshal([]byte(response), &analysis); err != nil {
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 
