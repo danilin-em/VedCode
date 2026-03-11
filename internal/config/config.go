@@ -49,6 +49,7 @@ type StorageConfig struct {
 type PromptsConfig struct {
 	ProjectStructureAnalysis string `yaml:"project_structure_analysis"`
 	SourceCodeAnalysis       string `yaml:"source_code_analysis"`
+	DirectoryAnalysis        string `yaml:"directory_analysis"`
 }
 
 const DefaultMaxFileSize = 1048576 // 1 MB
@@ -197,6 +198,9 @@ func merge(home, project *Config) *Config {
 	if project.Prompts.SourceCodeAnalysis != "" {
 		cfg.Prompts.SourceCodeAnalysis = project.Prompts.SourceCodeAnalysis
 	}
+	if project.Prompts.DirectoryAnalysis != "" {
+		cfg.Prompts.DirectoryAnalysis = project.Prompts.DirectoryAnalysis
+	}
 
 	return &cfg
 }
@@ -224,6 +228,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Prompts.SourceCodeAnalysis == "" {
 		cfg.Prompts.SourceCodeAnalysis = prompts.DefaultSourceCodeAnalysis
+	}
+	if cfg.Prompts.DirectoryAnalysis == "" {
+		cfg.Prompts.DirectoryAnalysis = prompts.DefaultDirectoryAnalysis
 	}
 }
 

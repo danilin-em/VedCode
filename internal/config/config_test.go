@@ -498,6 +498,9 @@ func TestLoad_PromptsDefaultsWhenEmpty(t *testing.T) {
 	if cfg.Prompts.SourceCodeAnalysis != prompts.DefaultSourceCodeAnalysis {
 		t.Error("expected default SourceCodeAnalysis prompt")
 	}
+	if cfg.Prompts.DirectoryAnalysis != prompts.DefaultDirectoryAnalysis {
+		t.Error("expected default DirectoryAnalysis prompt")
+	}
 }
 
 func TestLoad_PromptsFromConfig(t *testing.T) {
@@ -505,6 +508,7 @@ func TestLoad_PromptsFromConfig(t *testing.T) {
 prompts:
   project_structure_analysis: "Custom structure: ${CONTENT}"
   source_code_analysis: "Custom code: ${CONTENT}"
+  directory_analysis: "Custom dir: ${DIR_PATH}"
 `
 	path := writeTestConfig(t, yml)
 
@@ -518,6 +522,9 @@ prompts:
 	if cfg.Prompts.SourceCodeAnalysis != "Custom code: ${CONTENT}" {
 		t.Errorf("source_code_analysis = %q, want custom", cfg.Prompts.SourceCodeAnalysis)
 	}
+	if cfg.Prompts.DirectoryAnalysis != "Custom dir: ${DIR_PATH}" {
+		t.Errorf("directory_analysis = %q, want custom", cfg.Prompts.DirectoryAnalysis)
+	}
 }
 
 func TestLoad_PromptsMerge_ProjectOverridesHome(t *testing.T) {
@@ -525,6 +532,7 @@ func TestLoad_PromptsMerge_ProjectOverridesHome(t *testing.T) {
 prompts:
   project_structure_analysis: "home-structure"
   source_code_analysis: "home-code"
+  directory_analysis: "home-dir"
 `
 	homePath := writeTestConfig(t, homeYml)
 
@@ -543,5 +551,8 @@ prompts:
 	}
 	if cfg.Prompts.ProjectStructureAnalysis != "home-structure" {
 		t.Errorf("project_structure_analysis = %q, want %q", cfg.Prompts.ProjectStructureAnalysis, "home-structure")
+	}
+	if cfg.Prompts.DirectoryAnalysis != "home-dir" {
+		t.Errorf("directory_analysis = %q, want %q", cfg.Prompts.DirectoryAnalysis, "home-dir")
 	}
 }

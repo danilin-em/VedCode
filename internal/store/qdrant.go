@@ -160,6 +160,32 @@ func (q *QdrantStore) GetAllFilePoints() ([]*Point, error) {
 	return parsePoints(result.Result.Points), nil
 }
 
+// GetAllDirPoints returns all points with type=directory.
+func (q *QdrantStore) GetAllDirPoints() ([]*Point, error) {
+	body := map[string]any{
+		"filter": map[string]any{
+			"must": []map[string]any{
+				{
+					"key": "type",
+					"match": map[string]any{
+						"value": "directory",
+					},
+				},
+			},
+		},
+		"limit":        1000,
+		"with_payload": true,
+		"with_vector":  false,
+	}
+
+	var result qdrantScrollResponse
+	if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+		return nil, err
+	}
+
+	return parsePoints(result.Result.Points), nil
+}
+
 // GetPointByFilePath finds a point by its file_path payload field.
 func (q *QdrantStore) GetPointByFilePath(path string) (*Point, error) {
 	body := map[string]any{

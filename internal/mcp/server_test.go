@@ -26,6 +26,7 @@ func (m *mockStore) DeleteCollection() error                    { return nil }
 func (m *mockStore) UpsertPoint(point *store.Point) error       { return nil }
 func (m *mockStore) UpsertPoints(points []*store.Point) error   { return nil }
 func (m *mockStore) GetAllFilePoints() ([]*store.Point, error)  { return nil, nil }
+func (m *mockStore) GetAllDirPoints() ([]*store.Point, error)   { return nil, nil }
 func (m *mockStore) DeletePoints(ids []string) error            { return nil }
 
 func (m *mockStore) Search(vector []float32, limit int) ([]*store.SearchResult, error) {

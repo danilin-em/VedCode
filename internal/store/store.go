@@ -34,6 +34,7 @@ type Store interface {
 	UpsertPoint(point *Point) error
 	UpsertPoints(points []*Point) error
 	GetAllFilePoints() ([]*Point, error)
+	GetAllDirPoints() ([]*Point, error)
 	GetPointByFilePath(path string) (*Point, error)
 	DeletePoints(ids []string) error
 	Search(vector []float32, limit int) ([]*SearchResult, error)

@@ -307,6 +307,59 @@ func TestGetAllFilePoints(t *testing.T) {
 	}
 }
 
+func TestGetAllDirPoints(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+
+		// Verify filter uses type=directory
+		filter := req["filter"].(map[string]any)
+		must := filter["must"].([]any)
+		condition := must[0].(map[string]any)
+		matchVal := condition["match"].(map[string]any)
+		if matchVal["value"] != "directory" {
+			t.Errorf("expected filter value 'directory', got %v", matchVal["value"])
+		}
+
+		resp := `{
+			"result": {
+				"points": [{
+					"id": "uuid-dir-1",
+					"payload": {
+						"summary": "Storage layer",
+						"file_path": "internal/store",
+						"file_hash": "dirhash1",
+						"type": "directory",
+						"responsibilities": ["Vector storage", "REST client"],
+						"domain": "Infrastructure",
+						"language": "",
+						"indexed_at": "2025-01-01T00:00:00Z"
+					}
+				}]
+			}
+		}`
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(resp))
+	}))
+	defer srv.Close()
+
+	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	points, err := s.GetAllDirPoints()
+	if err != nil {
+		t.Fatalf("GetAllDirPoints failed: %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("expected 1 point, got %d", len(points))
+	}
+	if points[0].Type != "directory" {
+		t.Errorf("expected type directory, got %s", points[0].Type)
+	}
+	if points[0].FilePath != "internal/store" {
+		t.Errorf("expected file_path internal/store, got %s", points[0].FilePath)
+	}
+}
+
 func TestGetPointByFilePath_Found(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := `{

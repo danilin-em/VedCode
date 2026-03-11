@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +40,25 @@ const fileAnalysisSchema = `{
 	},
 	"required": ["summary", "responsibilities", "domain", "language"],
 	"propertyOrdering": ["summary", "responsibilities", "domain", "language"]
+}`
+
+// dirAnalysis represents the JSON response from the LLM for directory analysis.
+type dirAnalysis struct {
+	Summary          string   `json:"summary"`
+	Responsibilities []string `json:"responsibilities"`
+	Domain           string   `json:"domain"`
+}
+
+// dirAnalysisSchema is the JSON schema for structured LLM responses for directories.
+const dirAnalysisSchema = `{
+	"type": "object",
+	"properties": {
+		"summary": {"type": "string"},
+		"responsibilities": {"type": "array", "items": {"type": "string"}},
+		"domain": {"type": "string"}
+	},
+	"required": ["summary", "responsibilities", "domain"],
+	"propertyOrdering": ["summary", "responsibilities", "domain"]
 }`
 
 // Run executes the full indexing cycle for the project.
@@ -130,7 +151,31 @@ func Run(configPath string, force bool) error {
 			deletedCount = len(deleteIDs)
 		}
 	}
-	log.Printf("Deleted %d stale records from Qdrant", deletedCount)
+	log.Printf("Deleted %d stale file records from Qdrant", deletedCount)
+
+	// Clean up deleted directories from Qdrant
+	existingDirPoints, err := db.GetAllDirPoints()
+	if err != nil {
+		return fmt.Errorf("getting existing dir points: %w", err)
+	}
+
+	currentDirs := extractUniqueDirs(walkResult.Files)
+	var deleteDirIDs []string
+	for _, p := range existingDirPoints {
+		if !currentDirs[p.FilePath] {
+			deleteDirIDs = append(deleteDirIDs, p.ID)
+		}
+	}
+
+	deletedDirCount := 0
+	if len(deleteDirIDs) > 0 {
+		if err := db.DeletePoints(deleteDirIDs); err != nil {
+			log.Printf("Warning: error deleting stale dir points: %v", err)
+		} else {
+			deletedDirCount = len(deleteDirIDs)
+		}
+	}
+	log.Printf("Deleted %d stale directory records from Qdrant", deletedDirCount)
 
 	// Analyze project structure via LLM
 	structurePrompt := prompts.Render(cfg.Prompts.ProjectStructureAnalysis, map[string]string{
@@ -253,6 +298,14 @@ func Run(configPath string, force bool) error {
 	}
 	wg.Wait()
 
+	// --- Stage 3: Directory analysis ---
+	log.Println("\n--- Stage 3: Directory analysis ---")
+
+	dirIndexed, dirSkipped, dirErrors := indexDirectories(
+		db, llm, embedder, cfg, projectOverview,
+		walkResult.Files, existingDirPoints,
+	)
+
 	// --- Summary ---
 	log.Println("\n=== Indexing complete ===")
 	log.Printf("Total files:   %d", len(walkResult.Files))
@@ -260,6 +313,9 @@ func Run(configPath string, force bool) error {
 	log.Printf("Skipped:       %d (unchanged)", skippedCount)
 	log.Printf("Deleted:       %d (removed from project)", deletedCount)
 	log.Printf("Errors:        %d", errorCount.Load())
+	log.Printf("Dirs indexed:  %d", dirIndexed)
+	log.Printf("Dirs skipped:  %d (unchanged)", dirSkipped)
+	log.Printf("Dirs errors:   %d", dirErrors)
 
 	return nil
 }
@@ -282,4 +338,221 @@ func parseAnalysis(response string) (*fileAnalysis, error) {
 	}
 
 	return &analysis, nil
+}
+
+// parseDirAnalysis parses the JSON response from the LLM for directory analysis.
+func parseDirAnalysis(response string) (*dirAnalysis, error) {
+	var analysis dirAnalysis
+	if err := json.Unmarshal([]byte(response), &analysis); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	if analysis.Summary == "" {
+		return nil, fmt.Errorf("empty summary in dir analysis response")
+	}
+
+	return &analysis, nil
+}
+
+// extractUniqueDirs collects all unique directories from file paths.
+// Includes all nesting levels, excluding the root (".").
+func extractUniqueDirs(files []string) map[string]bool {
+	dirs := make(map[string]bool)
+	for _, f := range files {
+		dir := filepath.Dir(f)
+		for dir != "." && dir != "" {
+			dirs[dir] = true
+			dir = filepath.Dir(dir)
+		}
+	}
+	return dirs
+}
+
+// buildDirOrder returns directories sorted bottom-up:
+// deeper directories (more path segments) come first.
+func buildDirOrder(dirs map[string]bool) []string {
+	order := make([]string, 0, len(dirs))
+	for d := range dirs {
+		order = append(order, d)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		di := strings.Count(order[i], string(filepath.Separator))
+		dj := strings.Count(order[j], string(filepath.Separator))
+		if di != dj {
+			return di > dj
+		}
+		return order[i] < order[j]
+	})
+	return order
+}
+
+// computeDirHash computes a deterministic hash for a directory based on
+// sorted file hashes of direct children and dir hashes of direct subdirectories.
+func computeDirHash(dirPath string, filesByDir map[string][]*store.Point, dirHashCache map[string]string) string {
+	var parts []string
+
+	if files, ok := filesByDir[dirPath]; ok {
+		fileHashes := make([]string, 0, len(files))
+		for _, f := range files {
+			fileHashes = append(fileHashes, f.FileHash)
+		}
+		sort.Strings(fileHashes)
+		parts = append(parts, fileHashes...)
+	}
+
+	for subDir, h := range dirHashCache {
+		if filepath.Dir(subDir) == dirPath {
+			parts = append(parts, h)
+		}
+	}
+	sort.Strings(parts)
+
+	hash := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(hash[:])
+}
+
+// buildFilesSummariesText formats file summaries for the LLM prompt.
+func buildFilesSummariesText(files []*store.Point) string {
+	if len(files) == 0 {
+		return "(no files)"
+	}
+	var sb strings.Builder
+	for _, f := range files {
+		sb.WriteString("- ")
+		sb.WriteString(f.FilePath)
+		sb.WriteString(": ")
+		sb.WriteString(f.Summary)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// buildSubdirsSummariesText formats subdirectory summaries for the LLM prompt.
+func buildSubdirsSummariesText(parentDir string, dirSummaryCache map[string]string) string {
+	var lines []string
+	for dir, summary := range dirSummaryCache {
+		if filepath.Dir(dir) == parentDir {
+			lines = append(lines, "- "+dir+": "+summary)
+		}
+	}
+	if len(lines) == 0 {
+		return "(no subdirectories)"
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+// indexDirectories performs Stage 3: bottom-up directory analysis.
+func indexDirectories(
+	db store.Store,
+	llm providers.TextGenerator,
+	embedder providers.EmbeddingProvider,
+	cfg *config.Config,
+	projectOverview string,
+	files []string,
+	existingDirPoints []*store.Point,
+) (indexed, skipped, errors int) {
+	// Load current file points from Qdrant (need their summaries and hashes)
+	allFilePoints, err := db.GetAllFilePoints()
+	if err != nil {
+		log.Printf("Stage 3: error loading file points: %v", err)
+		return 0, 0, 1
+	}
+
+	// Index file points by directory: dirPath → []Point (direct children only)
+	filesByDir := make(map[string][]*store.Point)
+	for _, p := range allFilePoints {
+		dir := filepath.Dir(p.FilePath)
+		if dir == "." {
+			dir = ""
+		}
+		filesByDir[dir] = append(filesByDir[dir], p)
+	}
+
+	// Build map of existing dir points: dirPath → Point
+	existingDirByPath := make(map[string]*store.Point, len(existingDirPoints))
+	for _, p := range existingDirPoints {
+		existingDirByPath[p.FilePath] = p
+	}
+
+	// Collect unique directories and sort bottom-up
+	allDirs := extractUniqueDirs(files)
+	orderedDirs := buildDirOrder(allDirs)
+
+	log.Printf("Found %d directories to analyze", len(orderedDirs))
+
+	// Cache of directory hashes: filled during bottom-up traversal
+	dirHashCache := make(map[string]string)
+	// Cache of directory summaries: for passing to parent directory analysis
+	dirSummaryCache := make(map[string]string)
+
+	totalDirs := len(orderedDirs)
+
+	for i, dirPath := range orderedDirs {
+		newHash := computeDirHash(dirPath, filesByDir, dirHashCache)
+		dirHashCache[dirPath] = newHash
+
+		// Check cache
+		if existing, ok := existingDirByPath[dirPath]; ok && existing.FileHash == newHash {
+			dirSummaryCache[dirPath] = existing.Summary
+			skipped++
+			continue
+		}
+
+		log.Printf("[%d/%d] Analyzing %s", i+1, totalDirs, dirPath)
+
+		filesSummaries := buildFilesSummariesText(filesByDir[dirPath])
+		subdirsSummaries := buildSubdirsSummariesText(dirPath, dirSummaryCache)
+
+		dirPrompt := prompts.Render(cfg.Prompts.DirectoryAnalysis, map[string]string{
+			"DIR_PATH":          dirPath,
+			"PROJECT_OVERVIEW":  projectOverview,
+			"FILES_SUMMARIES":   filesSummaries,
+			"SUBDIRS_SUMMARIES": subdirsSummaries,
+		})
+
+		response, err := llm.GenerateJSON(dirPrompt, dirAnalysisSchema)
+		if err != nil {
+			log.Printf("[%d/%d] Error analyzing %s: %v", i+1, totalDirs, dirPath, err)
+			errors++
+			continue
+		}
+
+		analysis, err := parseDirAnalysis(response)
+		if err != nil {
+			log.Printf("[%d/%d] Error parsing analysis for %s: %v", i+1, totalDirs, dirPath, err)
+			errors++
+			continue
+		}
+
+		embedding, err := embedder.EmbedContent(analysis.Summary)
+		if err != nil {
+			log.Printf("[%d/%d] Error embedding %s: %v", i+1, totalDirs, dirPath, err)
+			errors++
+			continue
+		}
+
+		point := &store.Point{
+			ID:               store.FilePathToID("dir:" + dirPath),
+			Vector:           embedding,
+			Summary:          analysis.Summary,
+			FilePath:         dirPath,
+			FileHash:         newHash,
+			Type:             "directory",
+			Responsibilities: analysis.Responsibilities,
+			Domain:           analysis.Domain,
+			IndexedAt:        time.Now(),
+		}
+
+		if err := db.UpsertPoint(point); err != nil {
+			log.Printf("[%d/%d] Error saving %s: %v", i+1, totalDirs, dirPath, err)
+			errors++
+			continue
+		}
+
+		dirSummaryCache[dirPath] = analysis.Summary
+		indexed++
+	}
+
+	return indexed, skipped, errors
 }
