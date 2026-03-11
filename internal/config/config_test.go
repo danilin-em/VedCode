@@ -28,7 +28,11 @@ llm:
   provider: "gemini"
   api_key: "test-key-123"
   model: "gemini-2.5-flash"
-  embedding_model: "gemini-embedding-001"
+
+embedding:
+  provider: "gemini"
+  api_key: "test-key-123"
+  model: "gemini-embedding-001"
 
 storage:
   type: "qdrant"
@@ -65,8 +69,11 @@ func TestLoad_ValidConfig(t *testing.T) {
 	if cfg.LLM.Model != "gemini-2.5-flash" {
 		t.Errorf("llm.model = %q, want %q", cfg.LLM.Model, "gemini-2.5-flash")
 	}
-	if cfg.LLM.EmbeddingModel != "gemini-embedding-001" {
-		t.Errorf("llm.embedding_model = %q, want %q", cfg.LLM.EmbeddingModel, "gemini-embedding-001")
+	if cfg.Embedding.Provider != "gemini" {
+		t.Errorf("embedding.provider = %q, want %q", cfg.Embedding.Provider, "gemini")
+	}
+	if cfg.Embedding.Model != "gemini-embedding-001" {
+		t.Errorf("embedding.model = %q, want %q", cfg.Embedding.Model, "gemini-embedding-001")
 	}
 	if cfg.Storage.Type != "qdrant" {
 		t.Errorf("storage.type = %q, want %q", cfg.Storage.Type, "qdrant")
@@ -85,7 +92,10 @@ llm:
   provider: "gemini"
   api_key: "key"
   model: "model"
-  embedding_model: "emb"
+embedding:
+  provider: "gemini"
+  api_key: "key"
+  model: "emb"
 storage:
   type: "qdrant"
   url: "http://localhost:6333"
@@ -113,7 +123,10 @@ llm:
   provider: "gemini"
   api_key: "${TEST_VEDCODE_API_KEY}"
   model: "model"
-  embedding_model: "emb"
+embedding:
+  provider: "gemini"
+  api_key: "${TEST_VEDCODE_API_KEY}"
+  model: "emb"
 storage:
   type: "qdrant"
   url: "http://localhost:6333"
@@ -126,7 +139,10 @@ storage:
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.LLM.APIKey != "secret-from-env" {
-		t.Errorf("api_key = %q, want %q", cfg.LLM.APIKey, "secret-from-env")
+		t.Errorf("llm.api_key = %q, want %q", cfg.LLM.APIKey, "secret-from-env")
+	}
+	if cfg.Embedding.APIKey != "secret-from-env" {
+		t.Errorf("embedding.api_key = %q, want %q", cfg.Embedding.APIKey, "secret-from-env")
 	}
 }
 
@@ -138,7 +154,10 @@ llm:
   provider: "gemini"
   api_key: "${NONEXISTENT_VAR_VEDCODE}"
   model: "model"
-  embedding_model: "emb"
+embedding:
+  provider: "gemini"
+  api_key: "key"
+  model: "emb"
 storage:
   type: "qdrant"
   url: "http://localhost:6333"
@@ -168,7 +187,9 @@ func TestLoad_ValidationErrors(t *testing.T) {
 llm:
   api_key: "k"
   model: "m"
-  embedding_model: "e"
+embedding:
+  provider: "g"
+  model: "e"
 storage:
   type: "q"
   url: "http://x"
@@ -177,13 +198,47 @@ storage:
 			wantErr: "llm.provider is required",
 		},
 		{
+			name: "missing embedding.provider",
+			yml: `
+llm:
+  provider: "g"
+  api_key: "k"
+  model: "m"
+embedding:
+  model: "e"
+storage:
+  type: "q"
+  url: "http://x"
+  collection_prefix: "p"
+`,
+			wantErr: "embedding.provider is required",
+		},
+		{
+			name: "missing embedding.model",
+			yml: `
+llm:
+  provider: "g"
+  api_key: "k"
+  model: "m"
+embedding:
+  provider: "g"
+storage:
+  type: "q"
+  url: "http://x"
+  collection_prefix: "p"
+`,
+			wantErr: "embedding.model is required",
+		},
+		{
 			name: "missing storage.url",
 			yml: `
 llm:
   provider: "g"
   api_key: "k"
   model: "m"
-  embedding_model: "e"
+embedding:
+  provider: "g"
+  model: "e"
 storage:
   type: "q"
   collection_prefix: "p"
@@ -238,7 +293,7 @@ func TestPathToName(t *testing.T) {
 	}
 }
 
-// --- New tests for home/project config merging ---
+// --- Tests for home/project config merging ---
 
 const homeConfig = `
 indexer:
@@ -252,7 +307,11 @@ llm:
   provider: "gemini"
   api_key: "home-api-key"
   model: "gemini-2.5-flash"
-  embedding_model: "gemini-embedding-001"
+
+embedding:
+  provider: "gemini"
+  api_key: "home-api-key"
+  model: "gemini-embedding-001"
 
 storage:
   type: "qdrant"
@@ -351,6 +410,64 @@ indexer:
 		if cfg.Indexer.IgnorePatterns[i] != p {
 			t.Errorf("ignore_patterns[%d] = %q, want %q", i, cfg.Indexer.IgnorePatterns[i], p)
 		}
+	}
+}
+
+func TestLoad_DifferentLLMAndEmbeddingProviders(t *testing.T) {
+	yml := `
+llm:
+  provider: "gemini"
+  api_key: "key"
+  model: "gemini-2.5-flash"
+embedding:
+  provider: "ollama"
+  url: "http://localhost:11434"
+  model: "nomic-embed-text"
+storage:
+  type: "qdrant"
+  url: "http://localhost:6333"
+  collection_prefix: "v_"
+`
+	path := writeTestConfig(t, yml)
+
+	cfg, err := loadWithPaths("", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.Provider != "gemini" {
+		t.Errorf("llm.provider = %q, want %q", cfg.LLM.Provider, "gemini")
+	}
+	if cfg.Embedding.Provider != "ollama" {
+		t.Errorf("embedding.provider = %q, want %q", cfg.Embedding.Provider, "ollama")
+	}
+	if cfg.Embedding.URL != "http://localhost:11434" {
+		t.Errorf("embedding.url = %q, want %q", cfg.Embedding.URL, "http://localhost:11434")
+	}
+	if cfg.Embedding.Model != "nomic-embed-text" {
+		t.Errorf("embedding.model = %q, want %q", cfg.Embedding.Model, "nomic-embed-text")
+	}
+}
+
+func TestLoad_EmbeddingMerge_ProjectOverridesHome(t *testing.T) {
+	homePath := writeTestConfig(t, homeConfig)
+
+	projectYml := `
+embedding:
+  provider: "ollama"
+  url: "http://localhost:11434"
+  model: "project-model"
+`
+	projectPath := writeTestConfig(t, projectYml)
+
+	cfg, err := loadWithPaths(homePath, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Embedding.Provider != "ollama" {
+		t.Errorf("embedding.provider = %q, want %q", cfg.Embedding.Provider, "ollama")
+	}
+	if cfg.Embedding.Model != "project-model" {
+		t.Errorf("embedding.model = %q, want %q", cfg.Embedding.Model, "project-model")
 	}
 }
 

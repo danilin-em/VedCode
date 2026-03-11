@@ -156,14 +156,14 @@ func RunServer(configPath string) error {
 		return fmt.Errorf("resolving root path: %w", err)
 	}
 
-	provider, err := providers.New(cfg.LLM)
+	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding)
 	if err != nil {
-		return fmt.Errorf("creating LLM provider: %w", err)
+		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
 	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name)
 
-	srv := NewServer(db, provider, rootPath)
+	srv := NewServer(db, embedder, rootPath)
 	return srv.ServeStdio()
 }
 

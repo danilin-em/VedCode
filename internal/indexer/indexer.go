@@ -40,10 +40,14 @@ func Run(configPath string, force bool) error {
 		return fmt.Errorf("resolving root path: %w", err)
 	}
 
-	// Initialize provider
-	provider, err := providers.New(cfg.LLM)
+	// Initialize providers
+	llm, err := providers.NewTextGenerator(cfg.LLM)
 	if err != nil {
-		return fmt.Errorf("creating LLM provider: %w", err)
+		return fmt.Errorf("creating text generator: %w", err)
+	}
+	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding)
+	if err != nil {
+		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
 	// Initialize store
@@ -125,7 +129,7 @@ func Run(configPath string, force bool) error {
 	}
 
 	log.Println("Analyzing project structure...")
-	projectOverview, err := provider.GenerateContent(structurePrompt)
+	projectOverview, err := llm.GenerateContent(structurePrompt)
 	if err != nil {
 		return fmt.Errorf("analyzing project structure: %w", err)
 	}
@@ -198,7 +202,7 @@ func Run(configPath string, force bool) error {
 				return
 			}
 
-			response, err := provider.GenerateContent(filePrompt)
+			response, err := llm.GenerateContent(filePrompt)
 			if err != nil {
 				log.Printf("[%d/%d] Error analyzing %s: %v", idx+1, totalFiles, relPath, err)
 				errorCount.Add(1)
@@ -213,7 +217,7 @@ func Run(configPath string, force bool) error {
 			}
 
 			// Get embedding for the summary
-			embedding, err := provider.EmbedContent(analysis.Summary)
+			embedding, err := embedder.EmbedContent(analysis.Summary)
 			if err != nil {
 				log.Printf("[%d/%d] Error embedding %s: %v", idx+1, totalFiles, relPath, err)
 				errorCount.Add(1)

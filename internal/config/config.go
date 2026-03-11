@@ -12,10 +12,11 @@ import (
 )
 
 type Config struct {
-	Project ProjectConfig `yaml:"-"`
-	Indexer IndexerConfig `yaml:"indexer"`
-	LLM     LLMConfig     `yaml:"llm"`
-	Storage StorageConfig `yaml:"storage"`
+	Project   ProjectConfig  `yaml:"-"`
+	Indexer   IndexerConfig  `yaml:"indexer"`
+	LLM       ProviderConfig `yaml:"llm"`
+	Embedding ProviderConfig `yaml:"embedding"`
+	Storage   StorageConfig  `yaml:"storage"`
 }
 
 type ProjectConfig struct {
@@ -29,12 +30,11 @@ type IndexerConfig struct {
 	Workers        int      `yaml:"workers"`
 }
 
-type LLMConfig struct {
-	Provider       string `yaml:"provider"`
-	APIKey         string `yaml:"api_key"`
-	URL            string `yaml:"url"`
-	Model          string `yaml:"model"`
-	EmbeddingModel string `yaml:"embedding_model"`
+type ProviderConfig struct {
+	Provider string `yaml:"provider"`
+	APIKey   string `yaml:"api_key"`
+	URL      string `yaml:"url"`
+	Model    string `yaml:"model"`
 }
 
 type StorageConfig struct {
@@ -140,11 +140,22 @@ func merge(home, project *Config) *Config {
 	if project.LLM.Model != "" {
 		cfg.LLM.Model = project.LLM.Model
 	}
-	if project.LLM.EmbeddingModel != "" {
-		cfg.LLM.EmbeddingModel = project.LLM.EmbeddingModel
-	}
 	if project.LLM.URL != "" {
 		cfg.LLM.URL = project.LLM.URL
+	}
+
+	// Embedding: override non-zero fields
+	if project.Embedding.Provider != "" {
+		cfg.Embedding.Provider = project.Embedding.Provider
+	}
+	if project.Embedding.APIKey != "" {
+		cfg.Embedding.APIKey = project.Embedding.APIKey
+	}
+	if project.Embedding.URL != "" {
+		cfg.Embedding.URL = project.Embedding.URL
+	}
+	if project.Embedding.Model != "" {
+		cfg.Embedding.Model = project.Embedding.Model
 	}
 
 	// Storage: override non-zero fields
@@ -208,8 +219,11 @@ func validate(cfg *Config) error {
 	if cfg.LLM.Model == "" {
 		return fmt.Errorf("config validation: llm.model is required")
 	}
-	if cfg.LLM.EmbeddingModel == "" {
-		return fmt.Errorf("config validation: llm.embedding_model is required")
+	if cfg.Embedding.Provider == "" {
+		return fmt.Errorf("config validation: embedding.provider is required")
+	}
+	if cfg.Embedding.Model == "" {
+		return fmt.Errorf("config validation: embedding.model is required")
 	}
 	if cfg.Storage.Type == "" {
 		return fmt.Errorf("config validation: storage.type is required")

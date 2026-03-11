@@ -16,21 +16,28 @@ type EmbeddingProvider interface {
 	EmbedContent(text string) ([]float32, error)
 }
 
-// Provider combines text generation and embedding capabilities.
-type Provider interface {
-	TextGenerator
-	EmbeddingProvider
-}
-
-// New creates a Provider based on the LLM config.
-func New(cfg config.LLMConfig) (Provider, error) {
+// NewTextGenerator creates a TextGenerator based on provider config.
+func NewTextGenerator(cfg config.ProviderConfig) (TextGenerator, error) {
 	switch cfg.Provider {
 	case "gemini":
 		if cfg.APIKey == "" {
-			return nil, fmt.Errorf("gemini provider requires llm.api_key")
+			return nil, fmt.Errorf("gemini provider requires api_key")
 		}
-		return NewGeminiProvider(cfg.APIKey, cfg.Model, cfg.EmbeddingModel)
+		return NewGeminiProvider(cfg.APIKey, cfg.Model, "")
 	default:
 		return nil, fmt.Errorf("unsupported llm.provider: %q (supported: gemini)", cfg.Provider)
+	}
+}
+
+// NewEmbeddingProvider creates an EmbeddingProvider based on provider config.
+func NewEmbeddingProvider(cfg config.ProviderConfig) (EmbeddingProvider, error) {
+	switch cfg.Provider {
+	case "gemini":
+		if cfg.APIKey == "" {
+			return nil, fmt.Errorf("gemini provider requires api_key")
+		}
+		return NewGeminiProvider(cfg.APIKey, "", cfg.Model)
+	default:
+		return nil, fmt.Errorf("unsupported embedding.provider: %q (supported: gemini)", cfg.Provider)
 	}
 }
