@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"VedCode/internal/prompts"
 )
 
 func writeTestConfig(t *testing.T, content string) string {
@@ -478,5 +480,68 @@ func TestLoad_NeitherConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no config found") {
 		t.Errorf("error = %q, want to contain 'no config found'", err.Error())
+	}
+}
+
+// --- Tests for prompts config ---
+
+func TestLoad_PromptsDefaultsWhenEmpty(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+
+	cfg, err := loadWithPaths("", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Prompts.ProjectStructureAnalysis != prompts.DefaultProjectStructureAnalysis {
+		t.Error("expected default ProjectStructureAnalysis prompt")
+	}
+	if cfg.Prompts.SourceCodeAnalysis != prompts.DefaultSourceCodeAnalysis {
+		t.Error("expected default SourceCodeAnalysis prompt")
+	}
+}
+
+func TestLoad_PromptsFromConfig(t *testing.T) {
+	yml := validConfig + `
+prompts:
+  project_structure_analysis: "Custom structure: ${CONTENT}"
+  source_code_analysis: "Custom code: ${CONTENT}"
+`
+	path := writeTestConfig(t, yml)
+
+	cfg, err := loadWithPaths("", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Prompts.ProjectStructureAnalysis != "Custom structure: ${CONTENT}" {
+		t.Errorf("project_structure_analysis = %q, want custom", cfg.Prompts.ProjectStructureAnalysis)
+	}
+	if cfg.Prompts.SourceCodeAnalysis != "Custom code: ${CONTENT}" {
+		t.Errorf("source_code_analysis = %q, want custom", cfg.Prompts.SourceCodeAnalysis)
+	}
+}
+
+func TestLoad_PromptsMerge_ProjectOverridesHome(t *testing.T) {
+	homeYml := homeConfig + `
+prompts:
+  project_structure_analysis: "home-structure"
+  source_code_analysis: "home-code"
+`
+	homePath := writeTestConfig(t, homeYml)
+
+	projectYml := `
+prompts:
+  source_code_analysis: "project-code"
+`
+	projectPath := writeTestConfig(t, projectYml)
+
+	cfg, err := loadWithPaths(homePath, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Prompts.SourceCodeAnalysis != "project-code" {
+		t.Errorf("source_code_analysis = %q, want %q", cfg.Prompts.SourceCodeAnalysis, "project-code")
+	}
+	if cfg.Prompts.ProjectStructureAnalysis != "home-structure" {
+		t.Errorf("project_structure_analysis = %q, want %q", cfg.Prompts.ProjectStructureAnalysis, "home-structure")
 	}
 }

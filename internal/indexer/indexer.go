@@ -133,12 +133,9 @@ func Run(configPath string, force bool) error {
 	log.Printf("Deleted %d stale records from Qdrant", deletedCount)
 
 	// Analyze project structure via LLM
-	structurePrompt, err := prompts.Render("ProjectStructureAnalysis.md", map[string]string{
+	structurePrompt := prompts.Render(cfg.Prompts.ProjectStructureAnalysis, map[string]string{
 		"CONTENT": walkResult.Tree,
 	})
-	if err != nil {
-		return fmt.Errorf("rendering project structure prompt: %w", err)
-	}
 
 	log.Println("Analyzing project structure...")
 	projectOverview, err := llm.GenerateContent(structurePrompt)
@@ -204,15 +201,10 @@ func Run(configPath string, force bool) error {
 			log.Printf("[%d/%d] Indexing %s", idx+1, totalFiles, relPath)
 
 			// Analyze file via LLM
-			filePrompt, err := prompts.Render("SourceCodeAnalysis.md", map[string]string{
+			filePrompt := prompts.Render(cfg.Prompts.SourceCodeAnalysis, map[string]string{
 				"CONTENT":          string(content),
 				"PROJECT_OVERVIEW": projectOverview,
 			})
-			if err != nil {
-				log.Printf("[%d/%d] Error rendering prompt for %s: %v", idx+1, totalFiles, relPath, err)
-				errorCount.Add(1)
-				return
-			}
 
 			response, err := llm.GenerateJSON(filePrompt, fileAnalysisSchema)
 			if err != nil {

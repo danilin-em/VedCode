@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 
+	"VedCode/internal/prompts"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,6 +19,7 @@ type Config struct {
 	LLM       ProviderConfig `yaml:"llm"`
 	Embedding ProviderConfig `yaml:"embedding"`
 	Storage   StorageConfig  `yaml:"storage"`
+	Prompts   PromptsConfig  `yaml:"prompts"`
 }
 
 type ProjectConfig struct {
@@ -41,6 +44,11 @@ type StorageConfig struct {
 	Type             string `yaml:"type"`
 	URL              string `yaml:"url"`
 	CollectionPrefix string `yaml:"collection_prefix"`
+}
+
+type PromptsConfig struct {
+	ProjectStructureAnalysis string `yaml:"project_structure_analysis"`
+	SourceCodeAnalysis       string `yaml:"source_code_analysis"`
 }
 
 const DefaultMaxFileSize = 1048576 // 1 MB
@@ -182,6 +190,14 @@ func merge(home, project *Config) *Config {
 		cfg.Indexer.IgnorePatterns = append(cfg.Indexer.IgnorePatterns, project.Indexer.IgnorePatterns...)
 	}
 
+	// Prompts: override non-zero fields
+	if project.Prompts.ProjectStructureAnalysis != "" {
+		cfg.Prompts.ProjectStructureAnalysis = project.Prompts.ProjectStructureAnalysis
+	}
+	if project.Prompts.SourceCodeAnalysis != "" {
+		cfg.Prompts.SourceCodeAnalysis = project.Prompts.SourceCodeAnalysis
+	}
+
 	return &cfg
 }
 
@@ -202,6 +218,12 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Indexer.Workers <= 0 {
 		cfg.Indexer.Workers = 2
+	}
+	if cfg.Prompts.ProjectStructureAnalysis == "" {
+		cfg.Prompts.ProjectStructureAnalysis = prompts.DefaultProjectStructureAnalysis
+	}
+	if cfg.Prompts.SourceCodeAnalysis == "" {
+		cfg.Prompts.SourceCodeAnalysis = prompts.DefaultSourceCodeAnalysis
 	}
 }
 

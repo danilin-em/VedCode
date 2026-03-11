@@ -8,12 +8,9 @@ import (
 func TestRender_ProjectStructureAnalysis(t *testing.T) {
 	tree := "├── cmd/\n│   └── main.go\n└── internal/\n    └── app.go"
 
-	result, err := Render("ProjectStructureAnalysis.md", map[string]string{
+	result := Render(DefaultProjectStructureAnalysis, map[string]string{
 		"CONTENT": tree,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
 	if !strings.Contains(result, tree) {
 		t.Errorf("rendered template does not contain the file tree")
@@ -27,13 +24,10 @@ func TestRender_SourceCodeAnalysis(t *testing.T) {
 	code := "package main\n\nfunc main() {}\n"
 	overview := "Go CLI application with modular architecture."
 
-	result, err := Render("SourceCodeAnalysis.md", map[string]string{
+	result := Render(DefaultSourceCodeAnalysis, map[string]string{
 		"CONTENT":          code,
 		"PROJECT_OVERVIEW": overview,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
 	if !strings.Contains(result, code) {
 		t.Errorf("rendered template does not contain the source code")
@@ -49,18 +43,17 @@ func TestRender_SourceCodeAnalysis(t *testing.T) {
 	}
 }
 
-func TestRender_UnknownTemplate(t *testing.T) {
-	_, err := Render("NonExistent.md", nil)
-	if err == nil {
-		t.Fatal("expected error for unknown template, got nil")
+func TestRender_CustomTemplate(t *testing.T) {
+	result := Render("Custom prompt: ${CONTENT}", map[string]string{
+		"CONTENT": "test-data",
+	})
+	if result != "Custom prompt: test-data" {
+		t.Errorf("result = %q, want %q", result, "Custom prompt: test-data")
 	}
 }
 
 func TestRender_NilVars(t *testing.T) {
-	result, err := Render("ProjectStructureAnalysis.md", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result := Render(DefaultProjectStructureAnalysis, nil)
 
 	if !strings.Contains(result, "${CONTENT}") {
 		t.Errorf("expected ${CONTENT} placeholder to remain when no vars provided")
@@ -68,12 +61,9 @@ func TestRender_NilVars(t *testing.T) {
 }
 
 func TestRender_EmptyVars(t *testing.T) {
-	result, err := Render("ProjectStructureAnalysis.md", map[string]string{
+	result := Render(DefaultProjectStructureAnalysis, map[string]string{
 		"CONTENT": "",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
 	if strings.Contains(result, "${CONTENT}") {
 		t.Errorf("rendered template still contains ${CONTENT} placeholder")
