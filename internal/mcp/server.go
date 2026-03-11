@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -38,14 +40,16 @@ type Server struct {
 	store     store.Store
 	provider  providers.EmbeddingProvider
 	rootPath  string
+	logger    *slog.Logger
 }
 
 // NewServer creates a new MCP server with all VedCode tools registered.
-func NewServer(st store.Store, provider providers.EmbeddingProvider, rootPath string) *Server {
+func NewServer(st store.Store, provider providers.EmbeddingProvider, rootPath string, logger *slog.Logger) *Server {
 	s := &Server{
 		store:    st,
 		provider: provider,
 		rootPath: rootPath,
+		logger:   logger,
 	}
 
 	s.mcpServer = server.NewMCPServer(
@@ -106,6 +110,12 @@ func (s *Server) handleSearchCode(ctx context.Context, request mcp.CallToolReque
 		limit = 5
 	}
 
+	s.logger.Debug("handleSearchCode request",
+		"query", query,
+		"limit", limit,
+	)
+	start := time.Now()
+
 	vector, err := s.provider.EmbedContent(query)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to embed query: %v", err)), nil
@@ -121,11 +131,20 @@ func (s *Server) handleSearchCode(ctx context.Context, request mcp.CallToolReque
 		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal results: %v", err)), nil
 	}
 
+	s.logger.Debug("handleSearchCode response",
+		"query", query,
+		"results_count", len(results),
+		"response", string(data),
+		"duration", time.Since(start),
+	)
+
 	return mcp.NewToolResultText(string(data)), nil
 }
 
 func (s *Server) handleGetProjectOverview(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	overviewPath := filepath.Join(s.rootPath, ".vedcode", "project_overview.md")
+
+	s.logger.Debug("handleGetProjectOverview request", "path", overviewPath)
 
 	content, err := os.ReadFile(overviewPath)
 	if err != nil {
@@ -141,29 +160,42 @@ func (s *Server) handleGetProjectOverview(ctx context.Context, request mcp.CallT
 		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
 	}
 
+	s.logger.Debug("handleGetProjectOverview response",
+		"response", string(data),
+	)
+
 	return mcp.NewToolResultText(string(data)), nil
 }
 
 // RunServer loads config, initializes dependencies, and starts the MCP server.
-func RunServer(configPath string) error {
+func RunServer(configPath string, logger *slog.Logger) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	logger.Debug("config loaded",
+		"project", cfg.Project.Name,
+		"embedding_provider", cfg.Embedding.Provider,
+		"embedding_model", cfg.Embedding.Model,
+		"storage_url", cfg.Storage.URL,
+	)
 
 	rootPath, err := filepath.Abs(cfg.Project.RootPath)
 	if err != nil {
 		return fmt.Errorf("resolving root path: %w", err)
 	}
 
-	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding)
+	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding, logger)
 	if err != nil {
 		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name)
+	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, logger)
 
-	srv := NewServer(db, embedder, rootPath)
+	srv := NewServer(db, embedder, rootPath, logger)
+
+	logger.Debug("MCP server starting", "root_path", rootPath)
 	return srv.ServeStdio()
 }
 
@@ -173,11 +205,14 @@ func (s *Server) handleGetSummary(ctx context.Context, request mcp.CallToolReque
 		return mcp.NewToolResultError("file_path parameter is required"), nil
 	}
 
+	s.logger.Debug("handleGetSummary request", "file_path", filePath)
+
 	point, err := s.store.GetPointByFilePath(filePath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get file summary: %v", err)), nil
 	}
 	if point == nil {
+		s.logger.Debug("handleGetSummary: not indexed", "file_path", filePath)
 		return mcp.NewToolResultError(fmt.Sprintf("file '%s' is not indexed", filePath)), nil
 	}
 
@@ -191,6 +226,11 @@ func (s *Server) handleGetSummary(ctx context.Context, request mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
 	}
+
+	s.logger.Debug("handleGetSummary response",
+		"file_path", filePath,
+		"response", string(data),
+	)
 
 	return mcp.NewToolResultText(string(data)), nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -27,10 +28,11 @@ type GeminiProvider struct {
 	models         modelsAPI
 	model          string
 	embeddingModel string
+	logger         *slog.Logger
 }
 
 // NewGeminiProvider creates a new GeminiProvider with the given API key and model names.
-func NewGeminiProvider(apiKey, model, embeddingModel string) (*GeminiProvider, error) {
+func NewGeminiProvider(apiKey, model, embeddingModel string, logger *slog.Logger) (*GeminiProvider, error) {
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,
@@ -43,20 +45,28 @@ func NewGeminiProvider(apiKey, model, embeddingModel string) (*GeminiProvider, e
 		models:         client.Models,
 		model:          model,
 		embeddingModel: embeddingModel,
+		logger:         logger,
 	}, nil
 }
 
 // newGeminiProviderWithModels creates a GeminiProvider with a custom modelsAPI (for testing).
-func newGeminiProviderWithModels(models modelsAPI, model, embeddingModel string) *GeminiProvider {
+func newGeminiProviderWithModels(models modelsAPI, model, embeddingModel string, logger *slog.Logger) *GeminiProvider {
 	return &GeminiProvider{
 		models:         models,
 		model:          model,
 		embeddingModel: embeddingModel,
+		logger:         logger,
 	}
 }
 
 // GenerateContent sends a prompt to Gemini and returns the generated text.
 func (g *GeminiProvider) GenerateContent(prompt string) (string, error) {
+	g.logger.Debug("GenerateContent request",
+		"model", g.model,
+		"prompt", prompt,
+	)
+	start := time.Now()
+
 	contents := []*genai.Content{
 		genai.NewContentFromText(prompt, genai.RoleUser),
 	}
@@ -68,6 +78,11 @@ func (g *GeminiProvider) GenerateContent(prompt string) (string, error) {
 		return apiErr
 	})
 	if err != nil {
+		g.logger.Debug("GenerateContent failed",
+			"model", g.model,
+			"error", err,
+			"duration", time.Since(start),
+		)
 		return "", fmt.Errorf("generating content: %w", err)
 	}
 
@@ -76,11 +91,24 @@ func (g *GeminiProvider) GenerateContent(prompt string) (string, error) {
 		return "", fmt.Errorf("generating content: empty response")
 	}
 
+	g.logger.Debug("GenerateContent response",
+		"model", g.model,
+		"response", text,
+		"duration", time.Since(start),
+	)
+
 	return text, nil
 }
 
 // GenerateJSON sends a prompt to Gemini with a JSON response schema and returns the generated JSON string.
 func (g *GeminiProvider) GenerateJSON(prompt string, schema string) (string, error) {
+	g.logger.Debug("GenerateJSON request",
+		"model", g.model,
+		"prompt", prompt,
+		"schema", schema,
+	)
+	start := time.Now()
+
 	var responseSchema genai.Schema
 	if err := json.Unmarshal([]byte(schema), &responseSchema); err != nil {
 		return "", fmt.Errorf("parsing response schema: %w", err)
@@ -105,6 +133,11 @@ func (g *GeminiProvider) GenerateJSON(prompt string, schema string) (string, err
 		return apiErr
 	})
 	if err != nil {
+		g.logger.Debug("GenerateJSON failed",
+			"model", g.model,
+			"error", err,
+			"duration", time.Since(start),
+		)
 		return "", fmt.Errorf("generating JSON content: %w", err)
 	}
 
@@ -113,11 +146,23 @@ func (g *GeminiProvider) GenerateJSON(prompt string, schema string) (string, err
 		return "", fmt.Errorf("generating JSON content: empty response")
 	}
 
+	g.logger.Debug("GenerateJSON response",
+		"model", g.model,
+		"response", text,
+		"duration", time.Since(start),
+	)
+
 	return text, nil
 }
 
 // EmbedContent sends text to Gemini Embedding API and returns the embedding vector.
 func (g *GeminiProvider) EmbedContent(text string) ([]float32, error) {
+	g.logger.Debug("EmbedContent request",
+		"model", g.embeddingModel,
+		"text", text,
+	)
+	start := time.Now()
+
 	contents := []*genai.Content{
 		genai.NewContentFromText(text, genai.RoleUser),
 	}
@@ -129,12 +174,23 @@ func (g *GeminiProvider) EmbedContent(text string) ([]float32, error) {
 		return apiErr
 	})
 	if err != nil {
+		g.logger.Debug("EmbedContent failed",
+			"model", g.embeddingModel,
+			"error", err,
+			"duration", time.Since(start),
+		)
 		return nil, fmt.Errorf("embedding content: %w", err)
 	}
 
 	if len(resp.Embeddings) == 0 {
 		return nil, fmt.Errorf("embedding content: empty response")
 	}
+
+	g.logger.Debug("EmbedContent response",
+		"model", g.embeddingModel,
+		"vector_dim", len(resp.Embeddings[0].Values),
+		"duration", time.Since(start),
+	)
 
 	return resp.Embeddings[0].Values, nil
 }
@@ -157,6 +213,11 @@ func (g *GeminiProvider) retryOnRateLimit(fn func(ctx context.Context) error) er
 
 		if attempt < maxRetries-1 {
 			delay := baseRetryDelay * time.Duration(1<<attempt)
+			g.logger.Debug("retrying after rate limit",
+				"attempt", attempt+1,
+				"delay", delay,
+				"error", lastErr,
+			)
 			time.Sleep(delay)
 		}
 	}

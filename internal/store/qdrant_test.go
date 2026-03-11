@@ -3,11 +3,14 @@ package store
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+var noopLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func TestFilePathToID(t *testing.T) {
 	// Deterministic: same input → same output
@@ -45,7 +48,7 @@ func TestEnsureCollection_AlreadyExists(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	if err := s.EnsureCollection(); err != nil {
 		t.Fatalf("EnsureCollection failed: %v", err)
 	}
@@ -80,7 +83,7 @@ func TestEnsureCollection_Creates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	if err := s.EnsureCollection(); err != nil {
 		t.Fatalf("EnsureCollection failed: %v", err)
 	}
@@ -102,7 +105,7 @@ func TestUpsertPoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	err := s.UpsertPoint(&Point{
@@ -150,7 +153,7 @@ func TestUpsertPoint_UsesProvidedID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	customID := "custom-uuid-12345"
 	err := s.UpsertPoint(&Point{
 		ID:       customID,
@@ -182,7 +185,7 @@ func TestUpsertPoints(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	err := s.UpsertPoints([]*Point{
@@ -228,7 +231,7 @@ func TestUpsertPoints(t *testing.T) {
 }
 
 func TestUpsertPoints_Empty(t *testing.T) {
-	s := NewQdrantStore("http://localhost:6333", "vedcode_", "test")
+	s := NewQdrantStore("http://localhost:6333", "vedcode_", "test", noopLogger)
 	err := s.UpsertPoints([]*Point{})
 	if err != nil {
 		t.Fatalf("UpsertPoints with empty slice should not error: %v", err)
@@ -286,7 +289,7 @@ func TestGetAllFilePoints(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	points, err := s.GetAllFilePoints()
 	if err != nil {
 		t.Fatalf("GetAllFilePoints failed: %v", err)
@@ -344,7 +347,7 @@ func TestGetAllDirPoints(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	points, err := s.GetAllDirPoints()
 	if err != nil {
 		t.Fatalf("GetAllDirPoints failed: %v", err)
@@ -383,7 +386,7 @@ func TestGetPointByFilePath_Found(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	point, err := s.GetPointByFilePath("src/payment.go")
 	if err != nil {
 		t.Fatalf("GetPointByFilePath failed: %v", err)
@@ -403,7 +406,7 @@ func TestGetPointByFilePath_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	point, err := s.GetPointByFilePath("nonexistent.go")
 	if err != nil {
 		t.Fatalf("GetPointByFilePath failed: %v", err)
@@ -426,7 +429,7 @@ func TestDeletePoints(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	err := s.DeletePoints([]string{"uuid-1", "uuid-2"})
 	if err != nil {
 		t.Fatalf("DeletePoints failed: %v", err)
@@ -473,7 +476,7 @@ func TestSearch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	results, err := s.Search([]float32{0.1, 0.2, 0.3}, 3)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -509,7 +512,7 @@ func TestSearch_DefaultLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 	_, err := s.Search([]float32{0.1}, 0)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -517,7 +520,7 @@ func TestSearch_DefaultLimit(t *testing.T) {
 }
 
 func TestCollectionName(t *testing.T) {
-	s := NewQdrantStore("http://localhost:6333", "vedcode_", "my-app")
+	s := NewQdrantStore("http://localhost:6333", "vedcode_", "my-app", noopLogger)
 	if s.collection != "vedcode_my-app" {
 		t.Errorf("expected collection name vedcode_my-app, got %s", s.collection)
 	}
@@ -530,7 +533,7 @@ func TestQdrantError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewQdrantStore(srv.URL, "vedcode_", "test")
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", noopLogger)
 
 	// EnsureCollection should fail on creation
 	err := s.EnsureCollection()

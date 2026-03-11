@@ -29,3 +29,5 @@ cover.out
 # OS
 .DS_Store
 Thumbs.db
+
+*.log

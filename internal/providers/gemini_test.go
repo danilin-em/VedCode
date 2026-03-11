@@ -3,10 +3,14 @@ package providers
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"google.golang.org/genai"
 )
+
+var noopLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // mockModels implements modelsAPI for testing.
 type mockModels struct {
@@ -50,7 +54,7 @@ func TestGenerateContent_Success(t *testing.T) {
 		},
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	result, err := provider.GenerateContent("test prompt")
 	if err != nil {
@@ -69,7 +73,7 @@ func TestGenerateContent_APIError(t *testing.T) {
 		generateErr: fmt.Errorf("API error: invalid request"),
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	_, err := provider.GenerateContent("test prompt")
 	if err == nil {
@@ -85,7 +89,7 @@ func TestGenerateContent_EmptyResponse(t *testing.T) {
 		generateResp: &genai.GenerateContentResponse{},
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	_, err := provider.GenerateContent("test prompt")
 	if err == nil {
@@ -103,7 +107,7 @@ func TestEmbedContent_Success(t *testing.T) {
 		},
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	result, err := provider.EmbedContent("test text")
 	if err != nil {
@@ -127,7 +131,7 @@ func TestEmbedContent_APIError(t *testing.T) {
 		embedErr: fmt.Errorf("API error: forbidden"),
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	_, err := provider.EmbedContent("test text")
 	if err == nil {
@@ -143,7 +147,7 @@ func TestEmbedContent_EmptyResponse(t *testing.T) {
 		embedResp: &genai.EmbedContentResponse{},
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	_, err := provider.EmbedContent("test text")
 	if err == nil {
@@ -174,7 +178,7 @@ func TestRetryOnRateLimit(t *testing.T) {
 		callCount: &callCount,
 	}
 
-	provider := newGeminiProviderWithModels(mock2, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock2, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	result, err := provider.GenerateContent("test")
 	if err != nil {
@@ -199,7 +203,7 @@ func TestNoRetryOnNonRateLimitError(t *testing.T) {
 		successResp: &genai.GenerateContentResponse{},
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	_, err := provider.GenerateContent("test")
 	if err == nil {
@@ -226,7 +230,7 @@ func TestGenerateJSON_Success(t *testing.T) {
 		},
 	}
 
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	schema := `{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"integer"}},"required":["name","value"]}`
 	result, err := provider.GenerateJSON("test prompt", schema)
@@ -249,7 +253,7 @@ func TestGenerateJSON_Success(t *testing.T) {
 
 func TestGenerateJSON_InvalidSchema(t *testing.T) {
 	mock := &mockModels{}
-	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001")
+	provider := newGeminiProviderWithModels(mock, "gemini-2.5-flash", "gemini-embedding-001", noopLogger)
 
 	_, err := provider.GenerateJSON("test prompt", "not valid json")
 	if err == nil {

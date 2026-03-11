@@ -2,6 +2,7 @@ package providers
 
 import (
 	"fmt"
+	"log/slog"
 
 	"VedCode/internal/config"
 )
@@ -18,26 +19,26 @@ type EmbeddingProvider interface {
 }
 
 // NewTextGenerator creates a TextGenerator based on provider config.
-func NewTextGenerator(cfg config.ProviderConfig) (TextGenerator, error) {
+func NewTextGenerator(cfg config.ProviderConfig, logger *slog.Logger) (TextGenerator, error) {
 	switch cfg.Provider {
 	case "gemini":
 		if cfg.APIKey == "" {
 			return nil, fmt.Errorf("gemini provider requires api_key")
 		}
-		return NewGeminiProvider(cfg.APIKey, cfg.Model, "")
+		return NewGeminiProvider(cfg.APIKey, cfg.Model, "", logger)
 	default:
 		return nil, fmt.Errorf("unsupported llm.provider: %q (supported: gemini)", cfg.Provider)
 	}
 }
 
 // NewEmbeddingProvider creates an EmbeddingProvider based on provider config.
-func NewEmbeddingProvider(cfg config.ProviderConfig) (EmbeddingProvider, error) {
+func NewEmbeddingProvider(cfg config.ProviderConfig, logger *slog.Logger) (EmbeddingProvider, error) {
 	switch cfg.Provider {
 	case "gemini":
 		if cfg.APIKey == "" {
 			return nil, fmt.Errorf("gemini provider requires api_key")
 		}
-		return NewGeminiProvider(cfg.APIKey, "", cfg.Model)
+		return NewGeminiProvider(cfg.APIKey, "", cfg.Model, logger)
 	default:
 		return nil, fmt.Errorf("unsupported embedding.provider: %q (supported: gemini)", cfg.Provider)
 	}

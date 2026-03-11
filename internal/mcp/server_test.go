@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +14,8 @@ import (
 
 	"VedCode/internal/store"
 )
+
+var noopLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // mockStore implements store.Store for testing.
 type mockStore struct {
@@ -57,6 +61,7 @@ func TestSearchCode_Success(t *testing.T) {
 		&mockStore{searchResults: results},
 		&mockProvider{vector: []float32{0.1, 0.2, 0.3}},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -93,6 +98,7 @@ func TestSearchCode_MissingQuery(t *testing.T) {
 		&mockStore{},
 		&mockProvider{vector: []float32{0.1}},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -112,6 +118,7 @@ func TestSearchCode_EmbedError(t *testing.T) {
 		&mockStore{},
 		&mockProvider{err: fmt.Errorf("API error")},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -131,6 +138,7 @@ func TestSearchCode_StoreError(t *testing.T) {
 		&mockStore{searchErr: fmt.Errorf("qdrant down")},
 		&mockProvider{vector: []float32{0.1}},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -150,6 +158,7 @@ func TestSearchCode_DefaultLimit(t *testing.T) {
 		&mockStore{searchResults: []*store.SearchResult{}},
 		&mockProvider{vector: []float32{0.1}},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -170,7 +179,7 @@ func TestGetProjectOverview_Success(t *testing.T) {
 	os.MkdirAll(vedcodeDir, 0o755)
 	os.WriteFile(filepath.Join(vedcodeDir, "project_overview.md"), []byte("# Project Overview\nGo application"), 0o644)
 
-	s := NewServer(&mockStore{}, &mockProvider{}, tmpDir)
+	s := NewServer(&mockStore{}, &mockProvider{}, tmpDir, noopLogger)
 
 	req := mcp.CallToolRequest{}
 	result, err := s.handleGetProjectOverview(context.Background(), req)
@@ -194,7 +203,7 @@ func TestGetProjectOverview_Success(t *testing.T) {
 func TestGetProjectOverview_NotIndexed(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	s := NewServer(&mockStore{}, &mockProvider{}, tmpDir)
+	s := NewServer(&mockStore{}, &mockProvider{}, tmpDir, noopLogger)
 
 	req := mcp.CallToolRequest{}
 	result, err := s.handleGetProjectOverview(context.Background(), req)
@@ -218,6 +227,7 @@ func TestGetSummary_Success(t *testing.T) {
 		&mockStore{point: point},
 		&mockProvider{},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -252,7 +262,7 @@ func TestGetSummary_Success(t *testing.T) {
 }
 
 func TestGetSummary_MissingFilePath(t *testing.T) {
-	s := NewServer(&mockStore{}, &mockProvider{}, "/tmp/test")
+	s := NewServer(&mockStore{}, &mockProvider{}, "/tmp/test", noopLogger)
 
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
@@ -271,6 +281,7 @@ func TestGetSummary_NotIndexed(t *testing.T) {
 		&mockStore{point: nil},
 		&mockProvider{},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}
@@ -290,6 +301,7 @@ func TestGetSummary_StoreError(t *testing.T) {
 		&mockStore{pointErr: fmt.Errorf("connection refused")},
 		&mockProvider{},
 		"/tmp/test",
+		noopLogger,
 	)
 
 	req := mcp.CallToolRequest{}

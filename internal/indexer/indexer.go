@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -62,11 +63,22 @@ const dirAnalysisSchema = `{
 }`
 
 // Run executes the full indexing cycle for the project.
-func Run(configPath string, force bool) error {
+func Run(configPath string, force bool, logger *slog.Logger) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	logger.Debug("config loaded",
+		"project", cfg.Project.Name,
+		"llm_provider", cfg.LLM.Provider,
+		"llm_model", cfg.LLM.Model,
+		"embedding_provider", cfg.Embedding.Provider,
+		"embedding_model", cfg.Embedding.Model,
+		"storage_url", cfg.Storage.URL,
+		"workers", cfg.Indexer.Workers,
+		"max_file_size", cfg.Indexer.MaxFileSize,
+	)
 
 	rootPath, err := filepath.Abs(cfg.Project.RootPath)
 	if err != nil {
@@ -74,21 +86,22 @@ func Run(configPath string, force bool) error {
 	}
 
 	// Initialize providers
-	llm, err := providers.NewTextGenerator(cfg.LLM)
+	llm, err := providers.NewTextGenerator(cfg.LLM, logger)
 	if err != nil {
 		return fmt.Errorf("creating text generator: %w", err)
 	}
-	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding)
+	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding, logger)
 	if err != nil {
 		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
 	// Initialize store
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name)
+	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, logger)
 
 	// Force mode: delete existing data and start fresh
 	if force {
 		log.Println("Force mode: cleaning up existing data...")
+		logger.Debug("force mode: cleaning up")
 
 		overviewPath := filepath.Join(rootPath, ".vedcode", "project_overview.md")
 		if err := os.Remove(overviewPath); err != nil && !os.IsNotExist(err) {
@@ -123,6 +136,10 @@ func Run(configPath string, force bool) error {
 		return fmt.Errorf("walking project: %w", err)
 	}
 	log.Printf("Found %d files", len(walkResult.Files))
+	logger.Debug("walker completed",
+		"files_found", len(walkResult.Files),
+		"root_path", rootPath,
+	)
 
 	// Build a set of current files for fast lookup
 	currentFiles := make(map[string]bool, len(walkResult.Files))
@@ -152,6 +169,7 @@ func Run(configPath string, force bool) error {
 		}
 	}
 	log.Printf("Deleted %d stale file records from Qdrant", deletedCount)
+	logger.Debug("stale file cleanup", "deleted", deletedCount, "total_existing", len(existingPoints))
 
 	// Clean up deleted directories from Qdrant
 	existingDirPoints, err := db.GetAllDirPoints()
@@ -176,6 +194,7 @@ func Run(configPath string, force bool) error {
 		}
 	}
 	log.Printf("Deleted %d stale directory records from Qdrant", deletedDirCount)
+	logger.Debug("stale dir cleanup", "deleted", deletedDirCount, "total_existing", len(existingDirPoints))
 
 	// Analyze project structure via LLM
 	structurePrompt := prompts.Render(cfg.Prompts.ProjectStructureAnalysis, map[string]string{
@@ -183,6 +202,8 @@ func Run(configPath string, force bool) error {
 	})
 
 	log.Println("Analyzing project structure...")
+	logger.Debug("analyzing project structure", "prompt_length", len(structurePrompt))
+
 	projectOverview, err := llm.GenerateContent(structurePrompt)
 	if err != nil {
 		return fmt.Errorf("analyzing project structure: %w", err)
@@ -232,6 +253,7 @@ func Run(configPath string, force bool) error {
 
 		// Check if file needs re-indexing
 		if existing, ok := existingByPath[relPath]; ok && existing.FileHash == hash {
+			logger.Debug("file skipped (unchanged)", "file", relPath, "hash", hash)
 			skippedCount++
 			continue
 		}
@@ -244,6 +266,14 @@ func Run(configPath string, force bool) error {
 			defer func() { <-sem }()
 
 			log.Printf("[%d/%d] Indexing %s", idx+1, totalFiles, relPath)
+			logger.Debug("file indexing started",
+				"file", relPath,
+				"index", idx+1,
+				"total", totalFiles,
+				"hash", hash,
+				"size", len(content),
+			)
+			fileStart := time.Now()
 
 			// Analyze file via LLM
 			filePrompt := prompts.Render(cfg.Prompts.SourceCodeAnalysis, map[string]string{
@@ -264,6 +294,13 @@ func Run(configPath string, force bool) error {
 				errorCount.Add(1)
 				return
 			}
+
+			logger.Debug("file analysis completed",
+				"file", relPath,
+				"summary_length", len(analysis.Summary),
+				"domain", analysis.Domain,
+				"language", analysis.Language,
+			)
 
 			// Get embedding for the summary
 			embedding, err := embedder.EmbedContent(analysis.Summary)
@@ -293,6 +330,11 @@ func Run(configPath string, force bool) error {
 				return
 			}
 
+			logger.Debug("file indexing completed",
+				"file", relPath,
+				"duration", time.Since(fileStart),
+			)
+
 			indexedCount.Add(1)
 		}(i, relPath, content, hash)
 	}
@@ -303,7 +345,7 @@ func Run(configPath string, force bool) error {
 
 	dirIndexed, dirSkipped, dirErrors := indexDirectories(
 		db, llm, embedder, cfg, projectOverview,
-		walkResult.Files, existingDirPoints,
+		walkResult.Files, existingDirPoints, logger,
 	)
 
 	// --- Summary ---
@@ -316,6 +358,17 @@ func Run(configPath string, force bool) error {
 	log.Printf("Dirs indexed:  %d", dirIndexed)
 	log.Printf("Dirs skipped:  %d (unchanged)", dirSkipped)
 	log.Printf("Dirs errors:   %d", dirErrors)
+
+	logger.Debug("indexing complete",
+		"total_files", len(walkResult.Files),
+		"indexed", indexedCount.Load(),
+		"skipped", skippedCount,
+		"deleted", deletedCount,
+		"errors", errorCount.Load(),
+		"dirs_indexed", dirIndexed,
+		"dirs_skipped", dirSkipped,
+		"dirs_errors", dirErrors,
+	)
 
 	return nil
 }
@@ -451,6 +504,7 @@ func indexDirectories(
 	projectOverview string,
 	files []string,
 	existingDirPoints []*store.Point,
+	logger *slog.Logger,
 ) (indexed, skipped, errors int) {
 	// Load current file points from Qdrant (need their summaries and hashes)
 	allFilePoints, err := db.GetAllFilePoints()
@@ -495,11 +549,19 @@ func indexDirectories(
 		// Check cache
 		if existing, ok := existingDirByPath[dirPath]; ok && existing.FileHash == newHash {
 			dirSummaryCache[dirPath] = existing.Summary
+			logger.Debug("dir skipped (unchanged)", "dir", dirPath, "hash", newHash)
 			skipped++
 			continue
 		}
 
 		log.Printf("[%d/%d] Analyzing %s", i+1, totalDirs, dirPath)
+		logger.Debug("dir indexing started",
+			"dir", dirPath,
+			"index", i+1,
+			"total", totalDirs,
+			"hash", newHash,
+		)
+		dirStart := time.Now()
 
 		filesSummaries := buildFilesSummariesText(filesByDir[dirPath])
 		subdirsSummaries := buildSubdirsSummariesText(dirPath, dirSummaryCache)
@@ -549,6 +611,11 @@ func indexDirectories(
 			errors++
 			continue
 		}
+
+		logger.Debug("dir indexing completed",
+			"dir", dirPath,
+			"duration", time.Since(dirStart),
+		)
 
 		dirSummaryCache[dirPath] = analysis.Summary
 		indexed++
