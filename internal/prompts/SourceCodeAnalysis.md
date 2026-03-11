@@ -6,7 +6,9 @@ ${PROJECT_OVERVIEW}
 
 ## Source Code
 
+```
 ${CONTENT}
+```
 
 ## Instructions
 
