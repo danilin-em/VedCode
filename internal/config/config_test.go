@@ -177,20 +177,6 @@ storage:
 			wantErr: "llm.provider is required",
 		},
 		{
-			name: "missing llm.api_key",
-			yml: `
-llm:
-  provider: "g"
-  model: "m"
-  embedding_model: "e"
-storage:
-  type: "q"
-  url: "http://x"
-  collection_prefix: "p"
-`,
-			wantErr: "llm.api_key is required",
-		},
-		{
 			name: "missing storage.url",
 			yml: `
 llm:

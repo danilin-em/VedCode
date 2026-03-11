@@ -32,21 +32,16 @@ TIPS:
 - If search returns no useful results, try rephrasing the query with different terms
 - get_project_overview is cheap and fast — use it liberally when orienting in a codebase`
 
-// EmbeddingProvider abstracts the embedding API for search queries.
-type EmbeddingProvider interface {
-	EmbedContent(text string) ([]float32, error)
-}
-
 // Server wraps the MCP server with VedCode-specific tool handlers.
 type Server struct {
 	mcpServer *server.MCPServer
 	store     store.Store
-	provider  EmbeddingProvider
+	provider  providers.EmbeddingProvider
 	rootPath  string
 }
 
 // NewServer creates a new MCP server with all VedCode tools registered.
-func NewServer(st store.Store, provider EmbeddingProvider, rootPath string) *Server {
+func NewServer(st store.Store, provider providers.EmbeddingProvider, rootPath string) *Server {
 	s := &Server{
 		store:    st,
 		provider: provider,
@@ -161,7 +156,7 @@ func RunServer(configPath string) error {
 		return fmt.Errorf("resolving root path: %w", err)
 	}
 
-	provider, err := providers.NewGeminiProvider(cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.EmbeddingModel)
+	provider, err := providers.New(cfg.LLM)
 	if err != nil {
 		return fmt.Errorf("creating LLM provider: %w", err)
 	}

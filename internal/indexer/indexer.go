@@ -41,7 +41,7 @@ func Run(configPath string, force bool) error {
 	}
 
 	// Initialize provider
-	provider, err := providers.NewGeminiProvider(cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.EmbeddingModel)
+	provider, err := providers.New(cfg.LLM)
 	if err != nil {
 		return fmt.Errorf("creating LLM provider: %w", err)
 	}

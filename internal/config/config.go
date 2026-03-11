@@ -32,6 +32,7 @@ type IndexerConfig struct {
 type LLMConfig struct {
 	Provider       string `yaml:"provider"`
 	APIKey         string `yaml:"api_key"`
+	URL            string `yaml:"url"`
 	Model          string `yaml:"model"`
 	EmbeddingModel string `yaml:"embedding_model"`
 }
@@ -142,6 +143,9 @@ func merge(home, project *Config) *Config {
 	if project.LLM.EmbeddingModel != "" {
 		cfg.LLM.EmbeddingModel = project.LLM.EmbeddingModel
 	}
+	if project.LLM.URL != "" {
+		cfg.LLM.URL = project.LLM.URL
+	}
 
 	// Storage: override non-zero fields
 	if project.Storage.Type != "" {
@@ -200,9 +204,6 @@ func pathToName(absPath string) string {
 func validate(cfg *Config) error {
 	if cfg.LLM.Provider == "" {
 		return fmt.Errorf("config validation: llm.provider is required")
-	}
-	if cfg.LLM.APIKey == "" {
-		return fmt.Errorf("config validation: llm.api_key is required")
 	}
 	if cfg.LLM.Model == "" {
 		return fmt.Errorf("config validation: llm.model is required")
