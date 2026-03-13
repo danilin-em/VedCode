@@ -359,7 +359,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	}
 
 	// Initialize store
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, logger)
+	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, cfg.Storage.VectorSize, logger)
 
 	// Force mode: delete existing data and start fresh
 	if force {

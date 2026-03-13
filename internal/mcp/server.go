@@ -191,7 +191,7 @@ func RunServer(configPath string, logger *slog.Logger) error {
 		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, logger)
+	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, cfg.Storage.VectorSize, logger)
 
 	srv := NewServer(db, embedder, rootPath, logger)
 

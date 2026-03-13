@@ -44,6 +44,7 @@ type StorageConfig struct {
 	Type             string `yaml:"type"`
 	URL              string `yaml:"url"`
 	CollectionPrefix string `yaml:"collection_prefix"`
+	VectorSize       int    `yaml:"vector_size"`
 }
 
 type PromptsConfig struct {
@@ -177,6 +178,9 @@ func merge(home, project *Config) *Config {
 	if project.Storage.CollectionPrefix != "" {
 		cfg.Storage.CollectionPrefix = project.Storage.CollectionPrefix
 	}
+	if project.Storage.VectorSize != 0 {
+		cfg.Storage.VectorSize = project.Storage.VectorSize
+	}
 
 	// Indexer: override non-zero fields
 	if project.Indexer.MaxFileSize != 0 {
@@ -222,6 +226,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Indexer.Workers <= 0 {
 		cfg.Indexer.Workers = 2
+	}
+	if cfg.Storage.VectorSize <= 0 {
+		cfg.Storage.VectorSize = 3072
 	}
 	if cfg.Prompts.ProjectStructureAnalysis == "" {
 		cfg.Prompts.ProjectStructureAnalysis = prompts.DefaultProjectStructureAnalysis
