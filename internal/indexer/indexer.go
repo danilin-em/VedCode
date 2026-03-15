@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -235,7 +234,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 		defer func() { <-t.sem }()
 
 		n := t.progress.Add(1)
-		log.Printf("[%d/%d] Analyzing dir %s", n, t.totalItems, dirPath)
+		t.logger.Info(fmt.Sprintf("[%d/%d] Analyzing dir %s", n, t.totalItems, dirPath))
 		t.logger.Debug("dir indexing started", "dir", dirPath, "index", n, "total", t.totalItems, "hash", newHash)
 		dirStart := time.Now()
 
@@ -248,7 +247,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 
 		response, err := t.llm.GenerateJSON(dirPrompt, dirAnalysisSchema)
 		if err != nil {
-			log.Printf("Error analyzing dir %s: %v", dirPath, err)
+			t.logger.Error(fmt.Sprintf("Error analyzing dir %s: %v", dirPath, err))
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -256,7 +255,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 
 		analysis, err := parseDirAnalysis(response)
 		if err != nil {
-			log.Printf("Error parsing dir analysis for %s: %v", dirPath, err)
+			t.logger.Error(fmt.Sprintf("Error parsing dir analysis for %s: %v", dirPath, err))
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -264,7 +263,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 
 		embedding, err := t.embedder.EmbedContent(analysis.Summary)
 		if err != nil {
-			log.Printf("Error embedding dir %s: %v", dirPath, err)
+			t.logger.Error(fmt.Sprintf("Error embedding dir %s: %v", dirPath, err))
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -283,7 +282,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 		}
 
 		if err := t.db.UpsertPoint(point); err != nil {
-			log.Printf("Error saving dir %s: %v", dirPath, err)
+			t.logger.Error(fmt.Sprintf("Error saving dir %s: %v", dirPath, err))
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -363,19 +362,18 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 	// Force mode: delete existing data and start fresh
 	if force {
-		log.Println("Force mode: cleaning up existing data...")
-		logger.Debug("force mode: cleaning up")
+		logger.Info("Force mode: cleaning up existing data...")
 
 		overviewPath := filepath.Join(rootPath, ".vedcode", "project_overview.md")
 		if err := os.Remove(overviewPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing project overview: %w", err)
 		}
-		log.Println("Deleted .vedcode/project_overview.md")
+		logger.Info("Deleted .vedcode/project_overview.md")
 
 		if err := db.DeleteCollection(); err != nil {
-			log.Printf("Warning: could not delete collection: %v", err)
+			logger.Warn(fmt.Sprintf("could not delete collection: %v", err))
 		} else {
-			log.Println("Deleted Qdrant collection")
+			logger.Info("Deleted Qdrant collection")
 		}
 	}
 
@@ -383,12 +381,12 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		return fmt.Errorf("ensuring collection: %w", err)
 	}
 
-	log.Println("=== VedCode Indexer ===")
-	log.Printf("Project: %s", cfg.Project.Name)
-	log.Printf("Root: %s", rootPath)
+	logger.Info("=== VedCode Indexer ===")
+	logger.Info(fmt.Sprintf("Project: %s", cfg.Project.Name))
+	logger.Info(fmt.Sprintf("Root: %s", rootPath))
 
 	// --- Stage 1: Project structure analysis & cleanup ---
-	log.Println("\n--- Stage 1: Project structure analysis & cleanup ---")
+	logger.Info("\n--- Stage 1: Project structure analysis & cleanup ---")
 
 	walkResult, err := walker.Walk(walker.Options{
 		RootPath:       rootPath,
@@ -398,7 +396,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("walking project: %w", err)
 	}
-	log.Printf("Found %d files", len(walkResult.Files))
+	logger.Info(fmt.Sprintf("Found %d files", len(walkResult.Files)))
 	logger.Debug("walker completed",
 		"files_found", len(walkResult.Files),
 		"root_path", rootPath,
@@ -426,12 +424,12 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	deletedCount := 0
 	if len(deleteIDs) > 0 {
 		if err := db.DeletePoints(deleteIDs); err != nil {
-			log.Printf("Warning: error deleting stale points: %v", err)
+			logger.Warn(fmt.Sprintf("error deleting stale points: %v", err))
 		} else {
 			deletedCount = len(deleteIDs)
 		}
 	}
-	log.Printf("Deleted %d stale file records from Qdrant", deletedCount)
+	logger.Info(fmt.Sprintf("Deleted %d stale file records from Qdrant", deletedCount))
 	logger.Debug("stale file cleanup", "deleted", deletedCount, "total_existing", len(existingPoints))
 
 	// Clean up deleted directories from Qdrant
@@ -451,12 +449,12 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	deletedDirCount := 0
 	if len(deleteDirIDs) > 0 {
 		if err := db.DeletePoints(deleteDirIDs); err != nil {
-			log.Printf("Warning: error deleting stale dir points: %v", err)
+			logger.Warn(fmt.Sprintf("error deleting stale dir points: %v", err))
 		} else {
 			deletedDirCount = len(deleteDirIDs)
 		}
 	}
-	log.Printf("Deleted %d stale directory records from Qdrant", deletedDirCount)
+	logger.Info(fmt.Sprintf("Deleted %d stale directory records from Qdrant", deletedDirCount))
 	logger.Debug("stale dir cleanup", "deleted", deletedDirCount, "total_existing", len(existingDirPoints))
 
 	// Analyze project structure via LLM
@@ -464,7 +462,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		"CONTENT": walkResult.Tree,
 	})
 
-	log.Println("Analyzing project structure...")
+	logger.Info("Analyzing project structure...")
 	logger.Debug("analyzing project structure", "prompt_length", len(structurePrompt))
 
 	projectOverview, err := llm.GenerateContent(structurePrompt)
@@ -481,7 +479,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	if err := os.WriteFile(overviewPath, []byte(projectOverview), 0o644); err != nil {
 		return fmt.Errorf("saving project overview: %w", err)
 	}
-	log.Printf("Project overview saved to %s", overviewPath)
+	logger.Info(fmt.Sprintf("Project overview saved to %s", overviewPath))
 
 	// Build existing points map for hash comparison (keyed by file_path)
 	existingByPath := make(map[string]*store.Point, len(existingPoints))
@@ -490,8 +488,8 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	}
 
 	// --- Stage 2: File & directory indexing (interleaved) ---
-	log.Println("\n--- Stage 2: File & directory indexing ---")
-	log.Printf("Using %d worker(s)", cfg.Indexer.Workers)
+	logger.Info("\n--- Stage 2: File & directory indexing ---")
+	logger.Info(fmt.Sprintf("Using %d worker(s)", cfg.Indexer.Workers))
 
 	var indexedCount atomic.Int64
 	var errorCount atomic.Int64
@@ -512,7 +510,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		sem, &wg, &progress, totalItems, logger,
 	)
 
-	log.Printf("Found %d items to analyze (%d files, %d dirs)", totalItems, len(walkResult.Files), totalDirs)
+	logger.Info(fmt.Sprintf("Found %d items to analyze (%d files, %d dirs)", totalItems, len(walkResult.Files), totalDirs))
 
 	for _, relPath := range walkResult.Files {
 		absPath := filepath.Join(rootPath, relPath)
@@ -521,7 +519,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		content, err := os.ReadFile(absPath)
 		if err != nil {
 			n := progress.Add(1)
-			log.Printf("[%d/%d] Error reading %s: %v", n, totalItems, relPath, err)
+			logger.Error(fmt.Sprintf("[%d/%d] Error reading %s: %v", n, totalItems, relPath, err))
 			errorCount.Add(1)
 			tracker.fileFailed(relPath)
 			continue
@@ -545,7 +543,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			defer func() { <-sem }()
 
 			n := progress.Add(1)
-			log.Printf("[%d/%d] Indexing %s", n, totalItems, relPath)
+			logger.Info(fmt.Sprintf("[%d/%d] Indexing %s", n, totalItems, relPath))
 			logger.Debug("file indexing started",
 				"file", relPath,
 				"index", n,
@@ -563,7 +561,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 			response, err := llm.GenerateJSON(filePrompt, fileAnalysisSchema)
 			if err != nil {
-				log.Printf("[%d/%d] Error analyzing %s: %v", n, totalItems, relPath, err)
+				logger.Error(fmt.Sprintf("[%d/%d] Error analyzing %s: %v", n, totalItems, relPath, err))
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -571,7 +569,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 			analysis, err := parseAnalysis(response)
 			if err != nil {
-				log.Printf("[%d/%d] Error parsing analysis for %s: %v", n, totalItems, relPath, err)
+				logger.Error(fmt.Sprintf("[%d/%d] Error parsing analysis for %s: %v", n, totalItems, relPath, err))
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -587,7 +585,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			// Get embedding for the summary
 			embedding, err := embedder.EmbedContent(analysis.Summary)
 			if err != nil {
-				log.Printf("[%d/%d] Error embedding %s: %v", n, totalItems, relPath, err)
+				logger.Error(fmt.Sprintf("[%d/%d] Error embedding %s: %v", n, totalItems, relPath, err))
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -608,7 +606,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			}
 
 			if err := db.UpsertPoint(point); err != nil {
-				log.Printf("[%d/%d] Error saving %s: %v", n, totalItems, relPath, err)
+				logger.Error(fmt.Sprintf("[%d/%d] Error saving %s: %v", n, totalItems, relPath, err))
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -628,15 +626,15 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	dirIndexed, dirSkipped, dirErrors := tracker.results()
 
 	// --- Summary ---
-	log.Println("\n=== Indexing complete ===")
-	log.Printf("Total files:   %d", len(walkResult.Files))
-	log.Printf("Indexed:       %d", indexedCount.Load())
-	log.Printf("Skipped:       %d (unchanged)", skippedCount)
-	log.Printf("Deleted:       %d (removed from project)", deletedCount)
-	log.Printf("Errors:        %d", errorCount.Load())
-	log.Printf("Dirs indexed:  %d", dirIndexed)
-	log.Printf("Dirs skipped:  %d (unchanged)", dirSkipped)
-	log.Printf("Dirs errors:   %d", dirErrors)
+	logger.Info("\n=== Indexing complete ===")
+	logger.Info(fmt.Sprintf("Total files:   %d", len(walkResult.Files)))
+	logger.Info(fmt.Sprintf("Indexed:       %d", indexedCount.Load()))
+	logger.Info(fmt.Sprintf("Skipped:       %d (unchanged)", skippedCount))
+	logger.Info(fmt.Sprintf("Deleted:       %d (removed from project)", deletedCount))
+	logger.Info(fmt.Sprintf("Errors:        %d", errorCount.Load()))
+	logger.Info(fmt.Sprintf("Dirs indexed:  %d", dirIndexed))
+	logger.Info(fmt.Sprintf("Dirs skipped:  %d (unchanged)", dirSkipped))
+	logger.Info(fmt.Sprintf("Dirs errors:   %d", dirErrors))
 
 	logger.Debug("indexing complete",
 		"total_files", len(walkResult.Files),
@@ -759,4 +757,3 @@ func buildSubdirsSummariesText(childDirs []string, dirSummary map[string]string)
 	sort.Strings(lines)
 	return strings.Join(lines, "\n")
 }
-

@@ -22,12 +22,11 @@ type EmbeddingProvider interface {
 func NewTextGenerator(cfg config.ProviderConfig, logger *slog.Logger) (TextGenerator, error) {
 	switch cfg.Provider {
 	case "gemini":
-		if cfg.APIKey == "" {
-			return nil, fmt.Errorf("gemini provider requires api_key")
-		}
 		return NewGeminiProvider(cfg.APIKey, cfg.Model, "", logger)
+	case "generic-http":
+		return NewGenericHTTPProvider(cfg.URL, cfg.APIKey, cfg.Model, "", logger), nil
 	default:
-		return nil, fmt.Errorf("unsupported llm.provider: %q (supported: gemini)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported llm.provider: %q (supported: gemini, generic-http)", cfg.Provider)
 	}
 }
 
@@ -35,11 +34,10 @@ func NewTextGenerator(cfg config.ProviderConfig, logger *slog.Logger) (TextGener
 func NewEmbeddingProvider(cfg config.ProviderConfig, logger *slog.Logger) (EmbeddingProvider, error) {
 	switch cfg.Provider {
 	case "gemini":
-		if cfg.APIKey == "" {
-			return nil, fmt.Errorf("gemini provider requires api_key")
-		}
 		return NewGeminiProvider(cfg.APIKey, "", cfg.Model, logger)
+	case "generic-http":
+		return NewGenericHTTPProvider(cfg.URL, cfg.APIKey, "", cfg.Model, logger), nil
 	default:
-		return nil, fmt.Errorf("unsupported embedding.provider: %q (supported: gemini)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported embedding.provider: %q (supported: gemini, generic-http)", cfg.Provider)
 	}
 }
