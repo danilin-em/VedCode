@@ -357,8 +357,18 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
+	// Determine vector size: use config value or auto-detect from provider
+	vectorSize := cfg.Embedding.VectorSize
+	if vectorSize <= 0 {
+		vectorSize, err = embedder.DetectVectorSize()
+		if err != nil {
+			return fmt.Errorf("detecting vector size: %w", err)
+		}
+		logger.Info("Auto-detected vector size", "vector_size", vectorSize)
+	}
+
 	// Initialize store
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, cfg.Storage.VectorSize, logger)
+	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, vectorSize, logger)
 
 	// Force mode: delete existing data and start fresh
 	if force {

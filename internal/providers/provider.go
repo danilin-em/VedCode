@@ -16,6 +16,9 @@ type TextGenerator interface {
 // EmbeddingProvider generates vector embeddings from text.
 type EmbeddingProvider interface {
 	EmbedContent(text string) ([]float32, error)
+	// DetectVectorSize returns the embedding vector dimensionality
+	// by generating a test embedding.
+	DetectVectorSize() (int, error)
 }
 
 // NewTextGenerator creates a TextGenerator based on provider config.

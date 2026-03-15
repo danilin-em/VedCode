@@ -34,17 +34,17 @@ type IndexerConfig struct {
 }
 
 type ProviderConfig struct {
-	Provider string `yaml:"provider"`
-	APIKey   string `yaml:"api_key"`
-	URL      string `yaml:"url"`
-	Model    string `yaml:"model"`
+	Provider   string `yaml:"provider"`
+	APIKey     string `yaml:"api_key"`
+	URL        string `yaml:"url"`
+	Model      string `yaml:"model"`
+	VectorSize int    `yaml:"vector_size"`
 }
 
 type StorageConfig struct {
 	Type             string `yaml:"type"`
 	URL              string `yaml:"url"`
 	CollectionPrefix string `yaml:"collection_prefix"`
-	VectorSize       int    `yaml:"vector_size"`
 }
 
 type PromptsConfig struct {
@@ -167,6 +167,9 @@ func merge(home, project *Config) *Config {
 	if project.Embedding.Model != "" {
 		cfg.Embedding.Model = project.Embedding.Model
 	}
+	if project.Embedding.VectorSize != 0 {
+		cfg.Embedding.VectorSize = project.Embedding.VectorSize
+	}
 
 	// Storage: override non-zero fields
 	if project.Storage.Type != "" {
@@ -178,10 +181,6 @@ func merge(home, project *Config) *Config {
 	if project.Storage.CollectionPrefix != "" {
 		cfg.Storage.CollectionPrefix = project.Storage.CollectionPrefix
 	}
-	if project.Storage.VectorSize != 0 {
-		cfg.Storage.VectorSize = project.Storage.VectorSize
-	}
-
 	// Indexer: override non-zero fields
 	if project.Indexer.MaxFileSize != 0 {
 		cfg.Indexer.MaxFileSize = project.Indexer.MaxFileSize
@@ -226,9 +225,6 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Indexer.Workers <= 0 {
 		cfg.Indexer.Workers = 2
-	}
-	if cfg.Storage.VectorSize <= 0 {
-		cfg.Storage.VectorSize = 3072
 	}
 	if cfg.Prompts.ProjectStructureAnalysis == "" {
 		cfg.Prompts.ProjectStructureAnalysis = prompts.DefaultProjectStructureAnalysis

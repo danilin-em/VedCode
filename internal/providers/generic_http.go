@@ -216,6 +216,15 @@ func (p *GenericHTTPProvider) EmbedContent(text string) ([]float32, error) {
 	return resp.Data[0].Embedding, nil
 }
 
+// DetectVectorSize returns the embedding dimensionality by generating a test embedding.
+func (p *GenericHTTPProvider) DetectVectorSize() (int, error) {
+	vec, err := p.EmbedContent("test")
+	if err != nil {
+		return 0, fmt.Errorf("detect vector size: %w", err)
+	}
+	return len(vec), nil
+}
+
 // doChat sends a chat completions request and decodes the response.
 func (p *GenericHTTPProvider) doChat(ctx context.Context, reqBody chatRequest, result *chatResponse) error {
 	return p.doRequest(ctx, "/chat/completions", reqBody, result)

@@ -51,6 +51,13 @@ func (m *mockProvider) EmbedContent(text string) ([]float32, error) {
 	return m.vector, m.err
 }
 
+func (m *mockProvider) DetectVectorSize() (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	return len(m.vector), nil
+}
+
 func TestSearchCode_Success(t *testing.T) {
 	results := []*store.SearchResult{
 		{FilePath: "src/payment.go", Summary: "Payment processing", Score: 0.95},

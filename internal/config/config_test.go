@@ -574,8 +574,8 @@ func TestLoad_VectorSizeDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Storage.VectorSize != 3072 {
-		t.Errorf("default vector_size = %d, want 3072", cfg.Storage.VectorSize)
+	if cfg.Embedding.VectorSize != 0 {
+		t.Errorf("default vector_size = %d, want 0 (auto-detect)", cfg.Embedding.VectorSize)
 	}
 }
 
@@ -589,11 +589,11 @@ embedding:
   provider: "generic-http"
   url: "http://localhost:11434/v1"
   model: "emb"
+  vector_size: 1536
 storage:
   type: "qdrant"
   url: "http://localhost:6333"
   collection_prefix: "v_"
-  vector_size: 1536
 `
 	path := writeTestConfig(t, yml)
 
@@ -601,8 +601,8 @@ storage:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Storage.VectorSize != 1536 {
-		t.Errorf("vector_size = %d, want 1536", cfg.Storage.VectorSize)
+	if cfg.Embedding.VectorSize != 1536 {
+		t.Errorf("vector_size = %d, want 1536", cfg.Embedding.VectorSize)
 	}
 }
 
@@ -616,11 +616,11 @@ embedding:
   provider: "generic-http"
   url: "http://localhost:11434/v1"
   model: "nomic-embed-text"
+  vector_size: 768
 storage:
   type: "qdrant"
   url: "http://localhost:6333"
   collection_prefix: "v_"
-  vector_size: 768
 `
 	path := writeTestConfig(t, yml)
 
@@ -634,8 +634,8 @@ storage:
 	if cfg.LLM.URL != "http://localhost:11434/v1" {
 		t.Errorf("llm.url = %q, want http://localhost:11434/v1", cfg.LLM.URL)
 	}
-	if cfg.Storage.VectorSize != 768 {
-		t.Errorf("vector_size = %d, want 768", cfg.Storage.VectorSize)
+	if cfg.Embedding.VectorSize != 768 {
+		t.Errorf("vector_size = %d, want 768", cfg.Embedding.VectorSize)
 	}
 }
 

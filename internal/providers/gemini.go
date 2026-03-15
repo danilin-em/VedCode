@@ -187,3 +187,12 @@ func (g *GeminiProvider) EmbedContent(text string) ([]float32, error) {
 
 	return resp.Embeddings[0].Values, nil
 }
+
+// DetectVectorSize returns the embedding dimensionality by generating a test embedding.
+func (g *GeminiProvider) DetectVectorSize() (int, error) {
+	vec, err := g.EmbedContent("test")
+	if err != nil {
+		return 0, fmt.Errorf("detect vector size: %w", err)
+	}
+	return len(vec), nil
+}
