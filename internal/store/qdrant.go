@@ -14,15 +14,17 @@ import (
 type QdrantStore struct {
 	baseURL    string
 	collection string
+	vectorSize int
 	client     *http.Client
 	logger     *slog.Logger
 }
 
 // NewQdrantStore creates a new Qdrant store client.
-func NewQdrantStore(url, collectionPrefix, projectName string, logger *slog.Logger) *QdrantStore {
+func NewQdrantStore(url, collectionPrefix, projectName string, vectorSize int, logger *slog.Logger) *QdrantStore {
 	return &QdrantStore{
 		baseURL:    url,
 		collection: collectionPrefix + projectName,
+		vectorSize: vectorSize,
 		client:     &http.Client{Timeout: 30 * time.Second},
 		logger:     logger,
 	}
@@ -46,10 +48,10 @@ func (q *QdrantStore) EnsureCollection() error {
 
 	q.logger.Debug("EnsureCollection: creating", "collection", q.collection)
 
-	// Create collection with vector size 3072 and cosine distance
+	// Create collection with configured vector size and cosine distance
 	body := map[string]any{
 		"vectors": map[string]any{
-			"size":     3072,
+			"size":     q.vectorSize,
 			"distance": "Cosine",
 		},
 	}

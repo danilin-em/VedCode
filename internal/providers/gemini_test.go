@@ -3,14 +3,10 @@ package providers
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"testing"
 
 	"google.golang.org/genai"
 )
-
-var noopLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // mockModels implements modelsAPI for testing.
 type mockModels struct {
@@ -157,11 +153,6 @@ func TestEmbedContent_EmptyResponse(t *testing.T) {
 
 func TestRetryOnRateLimit(t *testing.T) {
 	callCount := 0
-	mock := &mockModels{
-		generateErr: fmt.Errorf("429 rate limit exceeded"),
-	}
-
-	// Override generateErr to succeed on 3rd attempt
 	mock2 := &rateLimitMock{
 		failCount: 2,
 		successResp: &genai.GenerateContentResponse{
@@ -190,8 +181,6 @@ func TestRetryOnRateLimit(t *testing.T) {
 	if callCount != 3 {
 		t.Errorf("call count = %d, want 3", callCount)
 	}
-
-	_ = mock // prevent unused variable
 }
 
 func TestNoRetryOnNonRateLimitError(t *testing.T) {

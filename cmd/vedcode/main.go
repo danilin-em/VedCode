@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +12,6 @@ import (
 )
 
 func main() {
-	log.SetFlags(0)
-
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -47,9 +44,11 @@ func main() {
 		traceLogPath = filepath.Join(".vedcode", "mcp-trace.log")
 	}
 
-	logger, closer, err := trace.NewLogger(traceEnabled, traceLogPath)
+	console := command == "indexer"
+	logger, closer, err := trace.NewLogger(traceEnabled, traceLogPath, console)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 	if closer != nil {
 		defer closer.Close()
@@ -67,7 +66,8 @@ func main() {
 	}
 
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

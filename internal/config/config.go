@@ -34,10 +34,11 @@ type IndexerConfig struct {
 }
 
 type ProviderConfig struct {
-	Provider string `yaml:"provider"`
-	APIKey   string `yaml:"api_key"`
-	URL      string `yaml:"url"`
-	Model    string `yaml:"model"`
+	Provider   string `yaml:"provider"`
+	APIKey     string `yaml:"api_key"`
+	URL        string `yaml:"url"`
+	Model      string `yaml:"model"`
+	VectorSize int    `yaml:"vector_size"`
 }
 
 type StorageConfig struct {
@@ -166,6 +167,9 @@ func merge(home, project *Config) *Config {
 	if project.Embedding.Model != "" {
 		cfg.Embedding.Model = project.Embedding.Model
 	}
+	if project.Embedding.VectorSize != 0 {
+		cfg.Embedding.VectorSize = project.Embedding.VectorSize
+	}
 
 	// Storage: override non-zero fields
 	if project.Storage.Type != "" {
@@ -177,7 +181,6 @@ func merge(home, project *Config) *Config {
 	if project.Storage.CollectionPrefix != "" {
 		cfg.Storage.CollectionPrefix = project.Storage.CollectionPrefix
 	}
-
 	// Indexer: override non-zero fields
 	if project.Indexer.MaxFileSize != 0 {
 		cfg.Indexer.MaxFileSize = project.Indexer.MaxFileSize
@@ -263,5 +266,31 @@ func validate(cfg *Config) error {
 	if cfg.Storage.CollectionPrefix == "" {
 		return fmt.Errorf("config validation: storage.collection_prefix is required")
 	}
+	// URL is required only for HTTP-based providers
+	if requiresURL(cfg.LLM.Provider) && cfg.LLM.URL == "" {
+		return fmt.Errorf("config validation: llm.url is required for provider %q", cfg.LLM.Provider)
+	}
+	if requiresURL(cfg.Embedding.Provider) && cfg.Embedding.URL == "" {
+		return fmt.Errorf("config validation: embedding.url is required for provider %q", cfg.Embedding.Provider)
+	}
+
+	// API key is required for SDK-based providers
+	if cfg.LLM.Provider == "gemini" && cfg.LLM.APIKey == "" {
+		return fmt.Errorf("config validation: llm.api_key is required for gemini provider")
+	}
+	if cfg.Embedding.Provider == "gemini" && cfg.Embedding.APIKey == "" {
+		return fmt.Errorf("config validation: embedding.api_key is required for gemini provider")
+	}
+
 	return nil
+}
+
+// requiresURL returns true for HTTP-based providers that need a base URL.
+func requiresURL(provider string) bool {
+	switch provider {
+	case "generic-http":
+		return true
+	default:
+		return false
+	}
 }

@@ -91,12 +91,12 @@ func TestLoad_ValidConfig(t *testing.T) {
 func TestLoad_DefaultMaxFileSize(t *testing.T) {
 	yml := `
 llm:
-  provider: "gemini"
-  api_key: "key"
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
   model: "model"
 embedding:
-  provider: "gemini"
-  api_key: "key"
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
   model: "emb"
 storage:
   type: "qdrant"
@@ -122,11 +122,13 @@ func TestLoad_EnvVarSubstitution(t *testing.T) {
 
 	yml := `
 llm:
-  provider: "gemini"
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
   api_key: "${TEST_VEDCODE_API_KEY}"
   model: "model"
 embedding:
-  provider: "gemini"
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
   api_key: "${TEST_VEDCODE_API_KEY}"
   model: "emb"
 storage:
@@ -153,11 +155,13 @@ func TestLoad_EnvVarNotSet(t *testing.T) {
 
 	yml := `
 llm:
-  provider: "gemini"
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
   api_key: "${NONEXISTENT_VAR_VEDCODE}"
   model: "model"
 embedding:
-  provider: "gemini"
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
   api_key: "key"
   model: "emb"
 storage:
@@ -187,10 +191,11 @@ func TestLoad_ValidationErrors(t *testing.T) {
 			name: "missing llm.provider",
 			yml: `
 llm:
-  api_key: "k"
+  url: "http://x"
   model: "m"
 embedding:
-  provider: "g"
+  provider: "generic-http"
+  url: "http://x"
   model: "e"
 storage:
   type: "q"
@@ -203,10 +208,11 @@ storage:
 			name: "missing embedding.provider",
 			yml: `
 llm:
-  provider: "g"
-  api_key: "k"
+  provider: "generic-http"
+  url: "http://x"
   model: "m"
 embedding:
+  url: "http://x"
   model: "e"
 storage:
   type: "q"
@@ -219,11 +225,12 @@ storage:
 			name: "missing embedding.model",
 			yml: `
 llm:
-  provider: "g"
-  api_key: "k"
+  provider: "generic-http"
+  url: "http://x"
   model: "m"
 embedding:
-  provider: "g"
+  provider: "generic-http"
+  url: "http://x"
 storage:
   type: "q"
   url: "http://x"
@@ -235,17 +242,86 @@ storage:
 			name: "missing storage.url",
 			yml: `
 llm:
-  provider: "g"
-  api_key: "k"
+  provider: "generic-http"
+  url: "http://x"
   model: "m"
 embedding:
-  provider: "g"
+  provider: "generic-http"
+  url: "http://x"
   model: "e"
 storage:
   type: "q"
   collection_prefix: "p"
 `,
 			wantErr: "storage.url is required",
+		},
+		{
+			name: "missing llm.url for generic-http",
+			yml: `
+llm:
+  provider: "generic-http"
+  model: "m"
+embedding:
+  provider: "generic-http"
+  url: "http://x"
+  model: "e"
+storage:
+  type: "q"
+  url: "http://x"
+  collection_prefix: "p"
+`,
+			wantErr: `llm.url is required for provider "generic-http"`,
+		},
+		{
+			name: "missing embedding.url for generic-http",
+			yml: `
+llm:
+  provider: "generic-http"
+  url: "http://x"
+  model: "m"
+embedding:
+  provider: "generic-http"
+  model: "e"
+storage:
+  type: "q"
+  url: "http://x"
+  collection_prefix: "p"
+`,
+			wantErr: `embedding.url is required for provider "generic-http"`,
+		},
+		{
+			name: "missing llm.api_key for gemini",
+			yml: `
+llm:
+  provider: "gemini"
+  model: "gemini-2.5-flash"
+embedding:
+  provider: "gemini"
+  api_key: "key"
+  model: "gemini-embedding-001"
+storage:
+  type: "q"
+  url: "http://x"
+  collection_prefix: "p"
+`,
+			wantErr: "llm.api_key is required for gemini provider",
+		},
+		{
+			name: "missing embedding.api_key for gemini",
+			yml: `
+llm:
+  provider: "gemini"
+  api_key: "key"
+  model: "gemini-2.5-flash"
+embedding:
+  provider: "gemini"
+  model: "gemini-embedding-001"
+storage:
+  type: "q"
+  url: "http://x"
+  collection_prefix: "p"
+`,
+			wantErr: "embedding.api_key is required for gemini provider",
 		},
 	}
 
@@ -356,7 +432,7 @@ indexer:
   workers: 8
 
 llm:
-  model: "gemini-2.0-pro"
+  model: "gpt-4o"
 `
 	projectPath := writeTestConfig(t, projectYml)
 
@@ -369,8 +445,8 @@ llm:
 	if cfg.Indexer.Workers != 8 {
 		t.Errorf("workers = %d, want %d", cfg.Indexer.Workers, 8)
 	}
-	if cfg.LLM.Model != "gemini-2.0-pro" {
-		t.Errorf("model = %q, want %q", cfg.LLM.Model, "gemini-2.0-pro")
+	if cfg.LLM.Model != "gpt-4o" {
+		t.Errorf("model = %q, want %q", cfg.LLM.Model, "gpt-4o")
 	}
 
 	// Inherited from home
@@ -415,49 +491,13 @@ indexer:
 	}
 }
 
-func TestLoad_DifferentLLMAndEmbeddingProviders(t *testing.T) {
-	yml := `
-llm:
-  provider: "gemini"
-  api_key: "key"
-  model: "gemini-2.5-flash"
-embedding:
-  provider: "ollama"
-  url: "http://localhost:11434"
-  model: "nomic-embed-text"
-storage:
-  type: "qdrant"
-  url: "http://localhost:6333"
-  collection_prefix: "v_"
-`
-	path := writeTestConfig(t, yml)
-
-	cfg, err := loadWithPaths("", path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.LLM.Provider != "gemini" {
-		t.Errorf("llm.provider = %q, want %q", cfg.LLM.Provider, "gemini")
-	}
-	if cfg.Embedding.Provider != "ollama" {
-		t.Errorf("embedding.provider = %q, want %q", cfg.Embedding.Provider, "ollama")
-	}
-	if cfg.Embedding.URL != "http://localhost:11434" {
-		t.Errorf("embedding.url = %q, want %q", cfg.Embedding.URL, "http://localhost:11434")
-	}
-	if cfg.Embedding.Model != "nomic-embed-text" {
-		t.Errorf("embedding.model = %q, want %q", cfg.Embedding.Model, "nomic-embed-text")
-	}
-}
-
 func TestLoad_EmbeddingMerge_ProjectOverridesHome(t *testing.T) {
 	homePath := writeTestConfig(t, homeConfig)
 
 	projectYml := `
 embedding:
-  provider: "ollama"
-  url: "http://localhost:11434"
-  model: "project-model"
+  url: "http://localhost:11434/v1"
+  model: "nomic-embed-text"
 `
 	projectPath := writeTestConfig(t, projectYml)
 
@@ -465,11 +505,11 @@ embedding:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Embedding.Provider != "ollama" {
-		t.Errorf("embedding.provider = %q, want %q", cfg.Embedding.Provider, "ollama")
+	if cfg.Embedding.URL != "http://localhost:11434/v1" {
+		t.Errorf("embedding.url = %q, want %q", cfg.Embedding.URL, "http://localhost:11434/v1")
 	}
-	if cfg.Embedding.Model != "project-model" {
-		t.Errorf("embedding.model = %q, want %q", cfg.Embedding.Model, "project-model")
+	if cfg.Embedding.Model != "nomic-embed-text" {
+		t.Errorf("embedding.model = %q, want %q", cfg.Embedding.Model, "nomic-embed-text")
 	}
 }
 
@@ -524,6 +564,78 @@ prompts:
 	}
 	if cfg.Prompts.DirectoryAnalysis != "Custom dir: ${DIR_PATH}" {
 		t.Errorf("directory_analysis = %q, want custom", cfg.Prompts.DirectoryAnalysis)
+	}
+}
+
+func TestLoad_VectorSizeDefault(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+
+	cfg, err := loadWithPaths("", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Embedding.VectorSize != 0 {
+		t.Errorf("default vector_size = %d, want 0 (auto-detect)", cfg.Embedding.VectorSize)
+	}
+}
+
+func TestLoad_VectorSizeCustom(t *testing.T) {
+	yml := `
+llm:
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
+  model: "m"
+embedding:
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
+  model: "emb"
+  vector_size: 1536
+storage:
+  type: "qdrant"
+  url: "http://localhost:6333"
+  collection_prefix: "v_"
+`
+	path := writeTestConfig(t, yml)
+
+	cfg, err := loadWithPaths("", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Embedding.VectorSize != 1536 {
+		t.Errorf("vector_size = %d, want 1536", cfg.Embedding.VectorSize)
+	}
+}
+
+func TestLoad_GenericHTTPProviderWithURL(t *testing.T) {
+	yml := `
+llm:
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
+  model: "llama3.1"
+embedding:
+  provider: "generic-http"
+  url: "http://localhost:11434/v1"
+  model: "nomic-embed-text"
+  vector_size: 768
+storage:
+  type: "qdrant"
+  url: "http://localhost:6333"
+  collection_prefix: "v_"
+`
+	path := writeTestConfig(t, yml)
+
+	cfg, err := loadWithPaths("", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.Provider != "generic-http" {
+		t.Errorf("llm.provider = %q, want generic-http", cfg.LLM.Provider)
+	}
+	if cfg.LLM.URL != "http://localhost:11434/v1" {
+		t.Errorf("llm.url = %q, want http://localhost:11434/v1", cfg.LLM.URL)
+	}
+	if cfg.Embedding.VectorSize != 768 {
+		t.Errorf("vector_size = %d, want 768", cfg.Embedding.VectorSize)
 	}
 }
 
