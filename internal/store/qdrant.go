@@ -39,6 +39,7 @@ func (q *QdrantStore) EnsureCollection() error {
 	if err != nil {
 		return fmt.Errorf("check collection: %w", err)
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
@@ -159,28 +160,22 @@ func (q *QdrantStore) GetAllFilePoints() ([]*Point, error) {
 	q.logger.Debug("GetAllFilePoints")
 	start := time.Now()
 
-	body := map[string]any{
-		"filter": map[string]any{
-			"must": []map[string]any{
-				{
-					"key": "type",
-					"match": map[string]any{
-						"value": "file",
-					},
+	filter := map[string]any{
+		"must": []map[string]any{
+			{
+				"key": "type",
+				"match": map[string]any{
+					"value": "file",
 				},
 			},
 		},
-		"limit":        1000,
-		"with_payload": true,
-		"with_vector":  false,
 	}
 
-	var result qdrantScrollResponse
-	if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+	points, err := q.scrollAll(filter)
+	if err != nil {
 		return nil, err
 	}
 
-	points := parsePoints(result.Result.Points)
 	q.logger.Debug("GetAllFilePoints completed",
 		"count", len(points),
 		"duration", time.Since(start),
@@ -193,28 +188,22 @@ func (q *QdrantStore) GetAllDirPoints() ([]*Point, error) {
 	q.logger.Debug("GetAllDirPoints")
 	start := time.Now()
 
-	body := map[string]any{
-		"filter": map[string]any{
-			"must": []map[string]any{
-				{
-					"key": "type",
-					"match": map[string]any{
-						"value": "directory",
-					},
+	filter := map[string]any{
+		"must": []map[string]any{
+			{
+				"key": "type",
+				"match": map[string]any{
+					"value": "directory",
 				},
 			},
 		},
-		"limit":        1000,
-		"with_payload": true,
-		"with_vector":  false,
 	}
 
-	var result qdrantScrollResponse
-	if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+	points, err := q.scrollAll(filter)
+	if err != nil {
 		return nil, err
 	}
 
-	points := parsePoints(result.Result.Points)
 	q.logger.Debug("GetAllDirPoints completed",
 		"count", len(points),
 		"duration", time.Since(start),
@@ -305,6 +294,40 @@ func (q *QdrantStore) Search(vector []float32, limit int) ([]*SearchResult, erro
 	)
 
 	return results, nil
+}
+
+// scrollAll paginates through all points matching the given filter.
+func (q *QdrantStore) scrollAll(filter map[string]any) ([]*Point, error) {
+	const scrollLimit = 1000
+
+	var allPoints []*Point
+	var offset *string
+
+	for {
+		body := map[string]any{
+			"filter":       filter,
+			"limit":        scrollLimit,
+			"with_payload": true,
+			"with_vector":  false,
+		}
+		if offset != nil {
+			body["offset"] = *offset
+		}
+
+		var result qdrantScrollResponse
+		if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+			return nil, err
+		}
+
+		allPoints = append(allPoints, parsePoints(result.Result.Points)...)
+
+		if result.Result.NextPageOffset == nil {
+			break
+		}
+		offset = result.Result.NextPageOffset
+	}
+
+	return allPoints, nil
 }
 
 // --- HTTP helpers ---
@@ -428,7 +451,8 @@ func (q *QdrantStore) postExpectOK(path string, body any) error {
 
 type qdrantScrollResponse struct {
 	Result struct {
-		Points []qdrantPoint `json:"points"`
+		Points        []qdrantPoint `json:"points"`
+		NextPageOffset *string      `json:"next_page_offset"`
 	} `json:"result"`
 }
 

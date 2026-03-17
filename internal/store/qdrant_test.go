@@ -558,3 +558,61 @@ func TestInterfaceCompliance(t *testing.T) {
 	// Compile-time check that QdrantStore implements Store
 	var _ Store = (*QdrantStore)(nil)
 }
+
+func TestGetAllFilePoints_Pagination(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+
+		callCount++
+		var resp string
+		if callCount == 1 {
+			// First page: has next_page_offset
+			if _, hasOffset := req["offset"]; hasOffset {
+				t.Error("first request should not have offset")
+			}
+			resp = `{
+				"result": {
+					"points": [
+						{"id": "uuid-1", "payload": {"file_path": "a.go", "type": "file", "summary": "file a"}},
+						{"id": "uuid-2", "payload": {"file_path": "b.go", "type": "file", "summary": "file b"}}
+					],
+					"next_page_offset": "uuid-2"
+				}
+			}`
+		} else {
+			// Second page: no next_page_offset
+			if req["offset"] != "uuid-2" {
+				t.Errorf("expected offset uuid-2, got %v", req["offset"])
+			}
+			resp = `{
+				"result": {
+					"points": [
+						{"id": "uuid-3", "payload": {"file_path": "c.go", "type": "file", "summary": "file c"}}
+					]
+				}
+			}`
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(resp))
+	}))
+	defer srv.Close()
+
+	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
+	points, err := s.GetAllFilePoints()
+	if err != nil {
+		t.Fatalf("GetAllFilePoints failed: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected 2 scroll requests, got %d", callCount)
+	}
+	if len(points) != 3 {
+		t.Fatalf("expected 3 points across pages, got %d", len(points))
+	}
+	if points[2].FilePath != "c.go" {
+		t.Errorf("expected third point file_path c.go, got %s", points[2].FilePath)
+	}
+}

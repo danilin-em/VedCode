@@ -509,7 +509,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	var wg sync.WaitGroup
 	var progress atomic.Int64
 
-	totalDirs := len(extractUniqueDirs(walkResult.Files))
+	totalDirs := len(currentDirs)
 	totalItems := len(walkResult.Files) + totalDirs
 
 	// Create directory tracker — directories are analyzed automatically
