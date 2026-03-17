@@ -541,6 +541,9 @@ func TestLoad_PromptsDefaultsWhenEmpty(t *testing.T) {
 	if cfg.Prompts.DirectoryAnalysis != prompts.DefaultDirectoryAnalysis {
 		t.Error("expected default DirectoryAnalysis prompt")
 	}
+	if cfg.Prompts.EnrichedOverviewAnalysis != prompts.DefaultEnrichedOverviewAnalysis {
+		t.Error("expected default EnrichedOverviewAnalysis prompt")
+	}
 }
 
 func TestLoad_PromptsFromConfig(t *testing.T) {
@@ -549,6 +552,7 @@ prompts:
   project_structure_analysis: "Custom structure: ${CONTENT}"
   source_code_analysis: "Custom code: ${CONTENT}"
   directory_analysis: "Custom dir: ${DIR_PATH}"
+  enriched_overview_analysis: "Custom enriched: ${FILE_TREE}"
 `
 	path := writeTestConfig(t, yml)
 
@@ -564,6 +568,9 @@ prompts:
 	}
 	if cfg.Prompts.DirectoryAnalysis != "Custom dir: ${DIR_PATH}" {
 		t.Errorf("directory_analysis = %q, want custom", cfg.Prompts.DirectoryAnalysis)
+	}
+	if cfg.Prompts.EnrichedOverviewAnalysis != "Custom enriched: ${FILE_TREE}" {
+		t.Errorf("enriched_overview_analysis = %q, want custom", cfg.Prompts.EnrichedOverviewAnalysis)
 	}
 }
 
@@ -645,6 +652,7 @@ prompts:
   project_structure_analysis: "home-structure"
   source_code_analysis: "home-code"
   directory_analysis: "home-dir"
+  enriched_overview_analysis: "home-enriched"
 `
 	homePath := writeTestConfig(t, homeYml)
 
@@ -666,5 +674,8 @@ prompts:
 	}
 	if cfg.Prompts.DirectoryAnalysis != "home-dir" {
 		t.Errorf("directory_analysis = %q, want %q", cfg.Prompts.DirectoryAnalysis, "home-dir")
+	}
+	if cfg.Prompts.EnrichedOverviewAnalysis != "home-enriched" {
+		t.Errorf("enriched_overview_analysis = %q, want %q", cfg.Prompts.EnrichedOverviewAnalysis, "home-enriched")
 	}
 }

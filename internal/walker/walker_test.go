@@ -247,14 +247,42 @@ func TestWalk_TreeFormat(t *testing.T) {
 
 	expectedLines := []string{
 		".",
-		"├── cmd",
-		"│   ├── indexer",
+		"├── cmd (2 .go, 24 B)",
+		"│   ├── indexer (1 .go, 12 B)",
+		"│   └── mcp (1 .go, 12 B)",
+		"├── go.mod",
+		"└── internal (1 .go, 14 B)",
+		"    └── config (1 .go, 14 B)",
+	}
+	expected := strings.Join(expectedLines, "\n") + "\n"
+
+	if result.Tree != expected {
+		t.Errorf("tree mismatch:\ngot:\n%s\nwant:\n%s", result.Tree, expected)
+	}
+}
+
+func TestWalk_TreeFileDepth(t *testing.T) {
+	root := t.TempDir()
+	createFile(t, root, "cmd/indexer/main.go", "package main")
+	createFile(t, root, "cmd/mcp/main.go", "package main")
+	createFile(t, root, "go.mod", "module test")
+	createFile(t, root, "internal/config/config.go", "package config")
+
+	result, err := Walk(Options{RootPath: root, TreeFileDepth: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedLines := []string{
+		".",
+		"├── cmd (2 .go, 24 B)",
+		"│   ├── indexer (1 .go, 12 B)",
 		"│   │   └── main.go",
-		"│   └── mcp",
+		"│   └── mcp (1 .go, 12 B)",
 		"│       └── main.go",
 		"├── go.mod",
-		"└── internal",
-		"    └── config",
+		"└── internal (1 .go, 14 B)",
+		"    └── config (1 .go, 14 B)",
 		"        └── config.go",
 	}
 	expected := strings.Join(expectedLines, "\n") + "\n"
