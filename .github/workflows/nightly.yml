@@ -1,0 +1,56 @@
+name: Nightly
+
+on:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      - name: Build binaries
+        run: |
+          set -e
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+          )
+          mkdir -p dist
+          for platform in "${platforms[@]}"; do
+            os="${platform%/*}"
+            arch="${platform#*/}"
+            name="vedcode-${os}-${arch}"
+            echo "Building ${name}..."
+            GOOS="${os}" GOARCH="${arch}" go build -o "dist/${name}" ./cmd/vedcode/
+            tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+            rm "dist/${name}"
+          done
+
+      - name: Delete previous nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete nightly --yes --cleanup-tag || true
+
+      - name: Create nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create nightly dist/*.tar.gz \
+            --title "Nightly ($(date -u +%Y-%m-%d))" \
+            --notes "Автоматическая сборка из \`${GITHUB_SHA::7}\` ($(date -u +%Y-%m-%d %H:%M UTC))" \
+            --prerelease
