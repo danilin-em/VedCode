@@ -44,6 +44,7 @@ type ProviderConfig struct {
 type StorageConfig struct {
 	Type             string `yaml:"type"`
 	URL              string `yaml:"url"`
+	Path             string `yaml:"path"`
 	CollectionPrefix string `yaml:"collection_prefix"`
 }
 
@@ -178,6 +179,9 @@ func merge(home, project *Config) *Config {
 	if project.Storage.URL != "" {
 		cfg.Storage.URL = project.Storage.URL
 	}
+	if project.Storage.Path != "" {
+		cfg.Storage.Path = project.Storage.Path
+	}
 	if project.Storage.CollectionPrefix != "" {
 		cfg.Storage.CollectionPrefix = project.Storage.CollectionPrefix
 	}
@@ -189,9 +193,12 @@ func merge(home, project *Config) *Config {
 		cfg.Indexer.Workers = project.Indexer.Workers
 	}
 
-	// IgnorePatterns: append project patterns to home patterns
-	if len(project.Indexer.IgnorePatterns) > 0 {
-		cfg.Indexer.IgnorePatterns = append(cfg.Indexer.IgnorePatterns, project.Indexer.IgnorePatterns...)
+	// IgnorePatterns: deep copy home patterns, then append project patterns.
+	// A shallow copy would share the underlying array with the home config.
+	if len(cfg.Indexer.IgnorePatterns) > 0 || len(project.Indexer.IgnorePatterns) > 0 {
+		merged := make([]string, len(cfg.Indexer.IgnorePatterns), len(cfg.Indexer.IgnorePatterns)+len(project.Indexer.IgnorePatterns))
+		copy(merged, cfg.Indexer.IgnorePatterns)
+		cfg.Indexer.IgnorePatterns = append(merged, project.Indexer.IgnorePatterns...)
 	}
 
 	// Prompts: override non-zero fields
@@ -225,6 +232,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Indexer.Workers <= 0 {
 		cfg.Indexer.Workers = 2
+	}
+	if cfg.Storage.Path == "" {
+		cfg.Storage.Path = ".vedcode/store"
 	}
 	if cfg.Prompts.ProjectStructureAnalysis == "" {
 		cfg.Prompts.ProjectStructureAnalysis = prompts.DefaultProjectStructureAnalysis
@@ -260,8 +270,8 @@ func validate(cfg *Config) error {
 	if cfg.Storage.Type == "" {
 		return fmt.Errorf("config validation: storage.type is required")
 	}
-	if cfg.Storage.URL == "" {
-		return fmt.Errorf("config validation: storage.url is required")
+	if cfg.Storage.Type == "qdrant" && cfg.Storage.URL == "" {
+		return fmt.Errorf("config validation: storage.url is required for qdrant storage")
 	}
 	if cfg.Storage.CollectionPrefix == "" {
 		return fmt.Errorf("config validation: storage.collection_prefix is required")

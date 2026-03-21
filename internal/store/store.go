@@ -1,9 +1,13 @@
 package store
 
 import (
+	"context"
 	"crypto/sha1"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"VedCode/internal/config"
 )
 
 // Point represents a stored record in the vector database.
@@ -29,15 +33,28 @@ type SearchResult struct {
 
 // Store defines the interface for vector storage operations.
 type Store interface {
-	EnsureCollection() error
-	DeleteCollection() error
-	UpsertPoint(point *Point) error
-	UpsertPoints(points []*Point) error
-	GetAllFilePoints() ([]*Point, error)
-	GetAllDirPoints() ([]*Point, error)
-	GetPointByFilePath(path string) (*Point, error)
-	DeletePoints(ids []string) error
-	Search(vector []float32, limit int) ([]*SearchResult, error)
+	EnsureCollection(ctx context.Context) error
+	DeleteCollection(ctx context.Context) error
+	UpsertPoint(ctx context.Context, point *Point) error
+	UpsertPoints(ctx context.Context, points []*Point) error
+	GetAllFilePoints(ctx context.Context) ([]*Point, error)
+	GetAllDirPoints(ctx context.Context) ([]*Point, error)
+	GetPointByFilePath(ctx context.Context, path string) (*Point, error)
+	DeletePoints(ctx context.Context, ids []string) error
+	Search(ctx context.Context, vector []float32, limit int) ([]*SearchResult, error)
+	Flush(ctx context.Context) error
+}
+
+// NewStore creates a Store implementation based on config.
+func NewStore(cfg config.StorageConfig, projectName string, vectorSize int, logger *slog.Logger) (Store, error) {
+	switch cfg.Type {
+	case "qdrant":
+		return NewQdrantStore(cfg.URL, cfg.CollectionPrefix, projectName, vectorSize, logger), nil
+	case "embedded":
+		return NewChromemStore(cfg.Path, cfg.CollectionPrefix, projectName, vectorSize, logger)
+	default:
+		return nil, fmt.Errorf("unsupported storage.type: %q (supported: qdrant, embedded)", cfg.Type)
+	}
 }
 
 // FilePathToID generates a deterministic UUID v5 from a file path.

@@ -25,19 +25,20 @@ type mockStore struct {
 	pointErr      error
 }
 
-func (m *mockStore) EnsureCollection() error                    { return nil }
-func (m *mockStore) DeleteCollection() error                    { return nil }
-func (m *mockStore) UpsertPoint(point *store.Point) error       { return nil }
-func (m *mockStore) UpsertPoints(points []*store.Point) error   { return nil }
-func (m *mockStore) GetAllFilePoints() ([]*store.Point, error)  { return nil, nil }
-func (m *mockStore) GetAllDirPoints() ([]*store.Point, error)   { return nil, nil }
-func (m *mockStore) DeletePoints(ids []string) error            { return nil }
+func (m *mockStore) EnsureCollection(_ context.Context) error                    { return nil }
+func (m *mockStore) DeleteCollection(_ context.Context) error                    { return nil }
+func (m *mockStore) UpsertPoint(_ context.Context, _ *store.Point) error         { return nil }
+func (m *mockStore) UpsertPoints(_ context.Context, _ []*store.Point) error      { return nil }
+func (m *mockStore) GetAllFilePoints(_ context.Context) ([]*store.Point, error)  { return nil, nil }
+func (m *mockStore) GetAllDirPoints(_ context.Context) ([]*store.Point, error)   { return nil, nil }
+func (m *mockStore) DeletePoints(_ context.Context, _ []string) error            { return nil }
+func (m *mockStore) Flush(_ context.Context) error                              { return nil }
 
-func (m *mockStore) Search(vector []float32, limit int) ([]*store.SearchResult, error) {
+func (m *mockStore) Search(_ context.Context, _ []float32, _ int) ([]*store.SearchResult, error) {
 	return m.searchResults, m.searchErr
 }
 
-func (m *mockStore) GetPointByFilePath(path string) (*store.Point, error) {
+func (m *mockStore) GetPointByFilePath(_ context.Context, _ string) (*store.Point, error) {
 	return m.point, m.pointErr
 }
 
@@ -47,7 +48,7 @@ type mockProvider struct {
 	err    error
 }
 
-func (m *mockProvider) EmbedContent(text string) ([]float32, error) {
+func (m *mockProvider) EmbedContent(_ string) ([]float32, error) {
 	return m.vector, m.err
 }
 

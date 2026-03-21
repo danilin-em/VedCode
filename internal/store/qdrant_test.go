@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -49,7 +50,7 @@ func TestEnsureCollection_AlreadyExists(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	if err := s.EnsureCollection(); err != nil {
+	if err := s.EnsureCollection(context.Background()); err != nil {
 		t.Fatalf("EnsureCollection failed: %v", err)
 	}
 }
@@ -84,7 +85,7 @@ func TestEnsureCollection_Creates(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	if err := s.EnsureCollection(); err != nil {
+	if err := s.EnsureCollection(context.Background()); err != nil {
 		t.Fatalf("EnsureCollection failed: %v", err)
 	}
 	if !created {
@@ -108,7 +109,7 @@ func TestUpsertPoint(t *testing.T) {
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	err := s.UpsertPoint(&Point{
+	err := s.UpsertPoint(context.Background(), &Point{
 		Vector:           []float32{0.1, 0.2, 0.3},
 		Summary:          "Test summary",
 		FilePath:         "src/main.go",
@@ -155,7 +156,7 @@ func TestUpsertPoint_UsesProvidedID(t *testing.T) {
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
 	customID := "custom-uuid-12345"
-	err := s.UpsertPoint(&Point{
+	err := s.UpsertPoint(context.Background(), &Point{
 		ID:       customID,
 		Vector:   []float32{0.1},
 		FilePath: "src/main.go",
@@ -188,23 +189,23 @@ func TestUpsertPoints(t *testing.T) {
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	err := s.UpsertPoints([]*Point{
+	err := s.UpsertPoints(context.Background(), []*Point{
 		{
-			Vector:   []float32{0.1, 0.2},
-			Summary:  "First file",
-			FilePath: "src/a.go",
-			FileHash: "hash1",
-			Type:     "file",
-			Language: "go",
+			Vector:    []float32{0.1, 0.2},
+			Summary:   "First file",
+			FilePath:  "src/a.go",
+			FileHash:  "hash1",
+			Type:      "file",
+			Language:  "go",
 			IndexedAt: now,
 		},
 		{
-			Vector:   []float32{0.3, 0.4},
-			Summary:  "Second file",
-			FilePath: "src/b.go",
-			FileHash: "hash2",
-			Type:     "file",
-			Language: "go",
+			Vector:    []float32{0.3, 0.4},
+			Summary:   "Second file",
+			FilePath:  "src/b.go",
+			FileHash:  "hash2",
+			Type:      "file",
+			Language:  "go",
 			IndexedAt: now,
 		},
 	})
@@ -232,7 +233,7 @@ func TestUpsertPoints(t *testing.T) {
 
 func TestUpsertPoints_Empty(t *testing.T) {
 	s := NewQdrantStore("http://localhost:6333", "vedcode_", "test", 3072, noopLogger)
-	err := s.UpsertPoints([]*Point{})
+	err := s.UpsertPoints(context.Background(), []*Point{})
 	if err != nil {
 		t.Fatalf("UpsertPoints with empty slice should not error: %v", err)
 	}
@@ -281,7 +282,8 @@ func TestGetAllFilePoints(t *testing.T) {
 							"indexed_at": "2025-01-01T00:00:00Z"
 						}
 					}
-				]
+				],
+				"next_page_offset": null
 			}
 		}`
 		w.WriteHeader(http.StatusOK)
@@ -290,7 +292,7 @@ func TestGetAllFilePoints(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	points, err := s.GetAllFilePoints()
+	points, err := s.GetAllFilePoints(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllFilePoints failed: %v", err)
 	}
@@ -339,7 +341,8 @@ func TestGetAllDirPoints(t *testing.T) {
 						"language": "",
 						"indexed_at": "2025-01-01T00:00:00Z"
 					}
-				}]
+				}],
+				"next_page_offset": null
 			}
 		}`
 		w.WriteHeader(http.StatusOK)
@@ -348,7 +351,7 @@ func TestGetAllDirPoints(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	points, err := s.GetAllDirPoints()
+	points, err := s.GetAllDirPoints(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllDirPoints failed: %v", err)
 	}
@@ -378,7 +381,8 @@ func TestGetPointByFilePath_Found(t *testing.T) {
 						"language": "go",
 						"indexed_at": "2025-01-01T00:00:00Z"
 					}
-				}]
+				}],
+				"next_page_offset": null
 			}
 		}`
 		w.WriteHeader(http.StatusOK)
@@ -387,7 +391,7 @@ func TestGetPointByFilePath_Found(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	point, err := s.GetPointByFilePath("src/payment.go")
+	point, err := s.GetPointByFilePath(context.Background(), "src/payment.go")
 	if err != nil {
 		t.Fatalf("GetPointByFilePath failed: %v", err)
 	}
@@ -402,12 +406,12 @@ func TestGetPointByFilePath_Found(t *testing.T) {
 func TestGetPointByFilePath_NotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":{"points":[]}}`))
+		w.Write([]byte(`{"result":{"points":[],"next_page_offset":null}}`))
 	}))
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	point, err := s.GetPointByFilePath("nonexistent.go")
+	point, err := s.GetPointByFilePath(context.Background(), "nonexistent.go")
 	if err != nil {
 		t.Fatalf("GetPointByFilePath failed: %v", err)
 	}
@@ -430,7 +434,7 @@ func TestDeletePoints(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	err := s.DeletePoints([]string{"uuid-1", "uuid-2"})
+	err := s.DeletePoints(context.Background(), []string{"uuid-1", "uuid-2"})
 	if err != nil {
 		t.Fatalf("DeletePoints failed: %v", err)
 	}
@@ -477,7 +481,7 @@ func TestSearch(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	results, err := s.Search([]float32{0.1, 0.2, 0.3}, 3)
+	results, err := s.Search(context.Background(), []float32{0.1, 0.2, 0.3}, 3)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
@@ -513,7 +517,7 @@ func TestSearch_DefaultLimit(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	_, err := s.Search([]float32{0.1}, 0)
+	_, err := s.Search(context.Background(), []float32{0.1}, 0)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
@@ -533,22 +537,23 @@ func TestQdrantError(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx := context.Background()
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
 
 	// EnsureCollection should fail on creation
-	err := s.EnsureCollection()
+	err := s.EnsureCollection(ctx)
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
 
 	// Search should fail
-	_, err = s.Search([]float32{0.1}, 5)
+	_, err = s.Search(ctx, []float32{0.1}, 5)
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
 
 	// GetAllFilePoints should fail
-	_, err = s.GetAllFilePoints()
+	_, err = s.GetAllFilePoints(ctx)
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -557,4 +562,11 @@ func TestQdrantError(t *testing.T) {
 func TestInterfaceCompliance(t *testing.T) {
 	// Compile-time check that QdrantStore implements Store
 	var _ Store = (*QdrantStore)(nil)
+}
+
+func TestQdrantFlush(t *testing.T) {
+	s := NewQdrantStore("http://localhost:6333", "vedcode_", "test", 3072, noopLogger)
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush should be a no-op, got error: %v", err)
+	}
 }

@@ -239,7 +239,7 @@ storage:
 			wantErr: "embedding.model is required",
 		},
 		{
-			name: "missing storage.url",
+			name: "missing storage.url for qdrant",
 			yml: `
 llm:
   provider: "generic-http"
@@ -250,10 +250,10 @@ embedding:
   url: "http://x"
   model: "e"
 storage:
-  type: "q"
+  type: "qdrant"
   collection_prefix: "p"
 `,
-			wantErr: "storage.url is required",
+			wantErr: "storage.url is required for qdrant storage",
 		},
 		{
 			name: "missing llm.url for generic-http",

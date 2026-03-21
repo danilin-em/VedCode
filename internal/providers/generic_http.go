@@ -263,7 +263,7 @@ func (p *GenericHTTPProvider) doRequest(ctx context.Context, path string, reqBod
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%d: %s", resp.StatusCode, string(body))
+		return &HTTPError{StatusCode: resp.StatusCode, Body: fmt.Sprintf("%d: %s", resp.StatusCode, string(body))}
 	}
 
 	if err := json.Unmarshal(body, result); err != nil {

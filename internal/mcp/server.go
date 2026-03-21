@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -121,7 +123,7 @@ func (s *Server) handleSearchCode(ctx context.Context, request mcp.CallToolReque
 		return mcp.NewToolResultError(fmt.Sprintf("failed to embed query: %v", err)), nil
 	}
 
-	results, err := s.store.Search(vector, limit)
+	results, err := s.store.Search(ctx, vector, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -141,14 +143,14 @@ func (s *Server) handleSearchCode(ctx context.Context, request mcp.CallToolReque
 	return mcp.NewToolResultText(string(data)), nil
 }
 
-func (s *Server) handleGetProjectOverview(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) handleGetProjectOverview(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	overviewPath := filepath.Join(s.rootPath, ".vedcode", "project_overview.md")
 
 	s.logger.Debug("handleGetProjectOverview request", "path", overviewPath)
 
 	content, err := os.ReadFile(overviewPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return mcp.NewToolResultError("project is not indexed yet; run 'vedcode indexer' first"), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read project overview: %v", err)), nil
@@ -191,17 +193,25 @@ func RunServer(configPath string, logger *slog.Logger) error {
 		return fmt.Errorf("creating embedding provider: %w", err)
 	}
 
-	// Determine vector size: use config value or auto-detect from provider
 	vectorSize := cfg.Embedding.VectorSize
 	if vectorSize <= 0 {
 		vectorSize, err = embedder.DetectVectorSize()
 		if err != nil {
 			return fmt.Errorf("detecting vector size: %w", err)
 		}
-		logger.Info("Auto-detected vector size", "vector_size", vectorSize)
+		logger.Info("auto-detected vector size", "vector_size", vectorSize)
 	}
 
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, vectorSize, logger)
+	ctx := context.Background()
+
+	db, err := store.NewStore(cfg.Storage, cfg.Project.Name, vectorSize, logger)
+	if err != nil {
+		return fmt.Errorf("initializing store: %w", err)
+	}
+
+	if err := db.EnsureCollection(ctx); err != nil {
+		return fmt.Errorf("ensuring collection: %w", err)
+	}
 
 	srv := NewServer(db, embedder, rootPath, logger)
 
@@ -217,7 +227,7 @@ func (s *Server) handleGetSummary(ctx context.Context, request mcp.CallToolReque
 
 	s.logger.Debug("handleGetSummary request", "file_path", filePath)
 
-	point, err := s.store.GetPointByFilePath(filePath)
+	point, err := s.store.GetPointByFilePath(ctx, filePath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get file summary: %v", err)), nil
 	}

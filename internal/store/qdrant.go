@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,14 +32,19 @@ func NewQdrantStore(url, collectionPrefix, projectName string, vectorSize int, l
 }
 
 // EnsureCollection creates the collection if it does not exist.
-func (q *QdrantStore) EnsureCollection() error {
+func (q *QdrantStore) EnsureCollection(ctx context.Context) error {
 	q.logger.Debug("EnsureCollection", "collection", q.collection)
 
 	// Check if collection exists
-	resp, err := q.client.Get(q.baseURL + "/collections/" + q.collection)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, q.baseURL+"/collections/"+q.collection, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	resp, err := q.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("check collection: %w", err)
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
@@ -56,14 +62,14 @@ func (q *QdrantStore) EnsureCollection() error {
 		},
 	}
 
-	return q.put("/collections/"+q.collection, body)
+	return q.put(ctx, "/collections/"+q.collection, body)
 }
 
 // DeleteCollection deletes the entire collection from Qdrant.
-func (q *QdrantStore) DeleteCollection() error {
+func (q *QdrantStore) DeleteCollection(ctx context.Context) error {
 	q.logger.Debug("DeleteCollection", "collection", q.collection)
 
-	req, err := http.NewRequest(http.MethodDelete, q.baseURL+"/collections/"+q.collection, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, q.baseURL+"/collections/"+q.collection, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -75,7 +81,10 @@ func (q *QdrantStore) DeleteCollection() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("qdrant delete collection returned %d (body unreadable: %w)", resp.StatusCode, err)
+		}
 		return fmt.Errorf("qdrant delete collection returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -83,7 +92,7 @@ func (q *QdrantStore) DeleteCollection() error {
 }
 
 // UpsertPoint creates or updates a point in the collection.
-func (q *QdrantStore) UpsertPoint(point *Point) error {
+func (q *QdrantStore) UpsertPoint(ctx context.Context, point *Point) error {
 	id := point.ID
 	if id == "" {
 		id = FilePathToID(point.FilePath)
@@ -114,11 +123,11 @@ func (q *QdrantStore) UpsertPoint(point *Point) error {
 		},
 	}
 
-	return q.put("/collections/"+q.collection+"/points", body)
+	return q.put(ctx, "/collections/"+q.collection+"/points", body)
 }
 
 // UpsertPoints creates or updates multiple points in the collection in a single request.
-func (q *QdrantStore) UpsertPoints(points []*Point) error {
+func (q *QdrantStore) UpsertPoints(ctx context.Context, points []*Point) error {
 	if len(points) == 0 {
 		return nil
 	}
@@ -151,36 +160,30 @@ func (q *QdrantStore) UpsertPoints(points []*Point) error {
 		"points": rawPoints,
 	}
 
-	return q.put("/collections/"+q.collection+"/points", body)
+	return q.put(ctx, "/collections/"+q.collection+"/points", body)
 }
 
-// GetAllFilePoints returns all points with type=file.
-func (q *QdrantStore) GetAllFilePoints() ([]*Point, error) {
+// GetAllFilePoints returns all points with type=file, paginating through all results.
+func (q *QdrantStore) GetAllFilePoints(ctx context.Context) ([]*Point, error) {
 	q.logger.Debug("GetAllFilePoints")
 	start := time.Now()
 
-	body := map[string]any{
-		"filter": map[string]any{
-			"must": []map[string]any{
-				{
-					"key": "type",
-					"match": map[string]any{
-						"value": "file",
-					},
+	filter := map[string]any{
+		"must": []map[string]any{
+			{
+				"key": "type",
+				"match": map[string]any{
+					"value": "file",
 				},
 			},
 		},
-		"limit":        1000,
-		"with_payload": true,
-		"with_vector":  false,
 	}
 
-	var result qdrantScrollResponse
-	if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+	points, err := q.scrollAll(ctx, filter)
+	if err != nil {
 		return nil, err
 	}
 
-	points := parsePoints(result.Result.Points)
 	q.logger.Debug("GetAllFilePoints completed",
 		"count", len(points),
 		"duration", time.Since(start),
@@ -188,33 +191,27 @@ func (q *QdrantStore) GetAllFilePoints() ([]*Point, error) {
 	return points, nil
 }
 
-// GetAllDirPoints returns all points with type=directory.
-func (q *QdrantStore) GetAllDirPoints() ([]*Point, error) {
+// GetAllDirPoints returns all points with type=directory, paginating through all results.
+func (q *QdrantStore) GetAllDirPoints(ctx context.Context) ([]*Point, error) {
 	q.logger.Debug("GetAllDirPoints")
 	start := time.Now()
 
-	body := map[string]any{
-		"filter": map[string]any{
-			"must": []map[string]any{
-				{
-					"key": "type",
-					"match": map[string]any{
-						"value": "directory",
-					},
+	filter := map[string]any{
+		"must": []map[string]any{
+			{
+				"key": "type",
+				"match": map[string]any{
+					"value": "directory",
 				},
 			},
 		},
-		"limit":        1000,
-		"with_payload": true,
-		"with_vector":  false,
 	}
 
-	var result qdrantScrollResponse
-	if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+	points, err := q.scrollAll(ctx, filter)
+	if err != nil {
 		return nil, err
 	}
 
-	points := parsePoints(result.Result.Points)
 	q.logger.Debug("GetAllDirPoints completed",
 		"count", len(points),
 		"duration", time.Since(start),
@@ -222,8 +219,41 @@ func (q *QdrantStore) GetAllDirPoints() ([]*Point, error) {
 	return points, nil
 }
 
+// scrollAll paginates through all Qdrant scroll results for a given filter.
+func (q *QdrantStore) scrollAll(ctx context.Context, filter map[string]any) ([]*Point, error) {
+	const pageSize = 1000
+	var allPoints []*Point
+	var offset any // nil for first page, then next_page_offset
+
+	for {
+		body := map[string]any{
+			"filter":       filter,
+			"limit":        pageSize,
+			"with_payload": true,
+			"with_vector":  false,
+		}
+		if offset != nil {
+			body["offset"] = offset
+		}
+
+		var result qdrantScrollResponse
+		if err := q.postJSON(ctx, "/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+			return nil, err
+		}
+
+		allPoints = append(allPoints, parsePoints(result.Result.Points)...)
+
+		if result.Result.NextPageOffset == nil || len(result.Result.Points) < pageSize {
+			break
+		}
+		offset = result.Result.NextPageOffset
+	}
+
+	return allPoints, nil
+}
+
 // GetPointByFilePath finds a point by its file_path payload field.
-func (q *QdrantStore) GetPointByFilePath(path string) (*Point, error) {
+func (q *QdrantStore) GetPointByFilePath(ctx context.Context, path string) (*Point, error) {
 	q.logger.Debug("GetPointByFilePath", "path", path)
 
 	body := map[string]any{
@@ -243,7 +273,7 @@ func (q *QdrantStore) GetPointByFilePath(path string) (*Point, error) {
 	}
 
 	var result qdrantScrollResponse
-	if err := q.postJSON("/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+	if err := q.postJSON(ctx, "/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
 		return nil, err
 	}
 
@@ -257,18 +287,21 @@ func (q *QdrantStore) GetPointByFilePath(path string) (*Point, error) {
 }
 
 // DeletePoints deletes points by their IDs.
-func (q *QdrantStore) DeletePoints(ids []string) error {
+func (q *QdrantStore) DeletePoints(ctx context.Context, ids []string) error {
 	q.logger.Debug("DeletePoints", "count", len(ids))
 
 	body := map[string]any{
 		"points": ids,
 	}
 
-	return q.postExpectOK("/collections/"+q.collection+"/points/delete", body)
+	return q.postExpectOK(ctx, "/collections/"+q.collection+"/points/delete", body)
 }
 
+// Flush is a no-op for QdrantStore; Qdrant persists data on every write.
+func (q *QdrantStore) Flush(_ context.Context) error { return nil }
+
 // Search performs a vector similarity search and returns matching results.
-func (q *QdrantStore) Search(vector []float32, limit int) ([]*SearchResult, error) {
+func (q *QdrantStore) Search(ctx context.Context, vector []float32, limit int) ([]*SearchResult, error) {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -286,7 +319,7 @@ func (q *QdrantStore) Search(vector []float32, limit int) ([]*SearchResult, erro
 	}
 
 	var result qdrantSearchResponse
-	if err := q.postJSON("/collections/"+q.collection+"/points/search", body, &result); err != nil {
+	if err := q.postJSON(ctx, "/collections/"+q.collection+"/points/search", body, &result); err != nil {
 		return nil, err
 	}
 
@@ -309,7 +342,7 @@ func (q *QdrantStore) Search(vector []float32, limit int) ([]*SearchResult, erro
 
 // --- HTTP helpers ---
 
-func (q *QdrantStore) put(path string, body any) error {
+func (q *QdrantStore) put(ctx context.Context, path string, body any) error {
 	start := time.Now()
 
 	data, err := json.Marshal(body)
@@ -322,7 +355,7 @@ func (q *QdrantStore) put(path string, body any) error {
 		"body", string(data),
 	)
 
-	req, err := http.NewRequest(http.MethodPut, q.baseURL+path, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, q.baseURL+path, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -334,7 +367,10 @@ func (q *QdrantStore) put(path string, body any) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
 	q.logger.Debug("HTTP PUT response",
 		"path", path,
@@ -350,7 +386,7 @@ func (q *QdrantStore) put(path string, body any) error {
 	return nil
 }
 
-func (q *QdrantStore) postJSON(path string, body any, result any) error {
+func (q *QdrantStore) postJSON(ctx context.Context, path string, body any, result any) error {
 	start := time.Now()
 
 	data, err := json.Marshal(body)
@@ -363,13 +399,22 @@ func (q *QdrantStore) postJSON(path string, body any, result any) error {
 		"body", string(data),
 	)
 
-	resp, err := q.client.Post(q.baseURL+path, "application/json", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, q.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := q.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
 	q.logger.Debug("HTTP POST response",
 		"path", path,
@@ -389,7 +434,7 @@ func (q *QdrantStore) postJSON(path string, body any, result any) error {
 	return nil
 }
 
-func (q *QdrantStore) postExpectOK(path string, body any) error {
+func (q *QdrantStore) postExpectOK(ctx context.Context, path string, body any) error {
 	start := time.Now()
 
 	data, err := json.Marshal(body)
@@ -402,13 +447,22 @@ func (q *QdrantStore) postExpectOK(path string, body any) error {
 		"body", string(data),
 	)
 
-	resp, err := q.client.Post(q.baseURL+path, "application/json", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, q.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := q.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
 	q.logger.Debug("HTTP POST response",
 		"path", path,
@@ -428,7 +482,8 @@ func (q *QdrantStore) postExpectOK(path string, body any) error {
 
 type qdrantScrollResponse struct {
 	Result struct {
-		Points []qdrantPoint `json:"points"`
+		Points         []qdrantPoint `json:"points"`
+		NextPageOffset any           `json:"next_page_offset"`
 	} `json:"result"`
 }
 

@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -68,6 +69,21 @@ type fileInfo struct {
 	summary  string
 }
 
+// trackerDeps groups dependencies for dirTracker to avoid long parameter lists.
+type trackerDeps struct {
+	db       store.Store
+	llm      providers.TextGenerator
+	embedder providers.EmbeddingProvider
+	cfg      *config.Config
+	overview string
+	sem      chan struct{}
+	wg       *sync.WaitGroup
+	logger   *slog.Logger
+
+	progress   *atomic.Int64
+	totalItems int
+}
+
 // dirTracker coordinates interleaved file and directory indexing.
 // Directory analysis starts automatically when all children (files + subdirs) are ready.
 type dirTracker struct {
@@ -78,20 +94,9 @@ type dirTracker struct {
 	dirSummary  map[string]string       // dir → summary (filled after analysis)
 	dirHash     map[string]string       // dir → computed hash
 	allDirs     map[string]bool         // all tracked directories
-	existingDir map[string]*store.Point // existing dir points from Qdrant
+	existingDir map[string]*store.Point // existing dir points from store
 
-	db       store.Store
-	llm      providers.TextGenerator
-	embedder providers.EmbeddingProvider
-	cfg      *config.Config
-	overview string
-	sem      chan struct{}
-	wg       *sync.WaitGroup
-	logger   *slog.Logger
-
-	// Shared progress counter (files + dirs) and total items count
-	progress   *atomic.Int64
-	totalItems int
+	trackerDeps
 
 	indexed atomic.Int64
 	skipped atomic.Int64
@@ -99,20 +104,7 @@ type dirTracker struct {
 }
 
 // newDirTracker creates a dirTracker with pre-computed dependency counts.
-func newDirTracker(
-	files []string,
-	existingDirPoints []*store.Point,
-	db store.Store,
-	llm providers.TextGenerator,
-	embedder providers.EmbeddingProvider,
-	cfg *config.Config,
-	overview string,
-	sem chan struct{},
-	wg *sync.WaitGroup,
-	progress *atomic.Int64,
-	totalItems int,
-	logger *slog.Logger,
-) *dirTracker {
+func newDirTracker(files []string, existingDirPoints []*store.Point, deps trackerDeps) *dirTracker {
 	allDirs := extractUniqueDirs(files)
 
 	// Count direct child files per directory
@@ -152,16 +144,7 @@ func newDirTracker(
 		dirHash:     make(map[string]string),
 		allDirs:     allDirs,
 		existingDir: existingDir,
-		db:          db,
-		llm:         llm,
-		embedder:    embedder,
-		cfg:         cfg,
-		overview:    overview,
-		sem:         sem,
-		wg:          wg,
-		progress:    progress,
-		totalItems:  totalItems,
-		logger:      logger,
+		trackerDeps: deps,
 	}
 }
 
@@ -233,8 +216,9 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 		t.sem <- struct{}{}
 		defer func() { <-t.sem }()
 
+		ctx := context.Background()
 		n := t.progress.Add(1)
-		t.logger.Info(fmt.Sprintf("[%d/%d] Analyzing dir %s", n, t.totalItems, dirPath))
+		t.logger.Info("analyzing directory", "dir", dirPath, "progress", n, "total", t.totalItems)
 		t.logger.Debug("dir indexing started", "dir", dirPath, "index", n, "total", t.totalItems, "hash", newHash)
 		dirStart := time.Now()
 
@@ -247,7 +231,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 
 		response, err := t.llm.GenerateJSON(dirPrompt, dirAnalysisSchema)
 		if err != nil {
-			t.logger.Error(fmt.Sprintf("Error analyzing dir %s: %v", dirPath, err))
+			t.logger.Error("dir analysis failed", "dir", dirPath, "error", err)
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -255,7 +239,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 
 		analysis, err := parseDirAnalysis(response)
 		if err != nil {
-			t.logger.Error(fmt.Sprintf("Error parsing dir analysis for %s: %v", dirPath, err))
+			t.logger.Error("dir analysis parse failed", "dir", dirPath, "error", err)
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -263,7 +247,7 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 
 		embedding, err := t.embedder.EmbedContent(analysis.Summary)
 		if err != nil {
-			t.logger.Error(fmt.Sprintf("Error embedding dir %s: %v", dirPath, err))
+			t.logger.Error("dir embedding failed", "dir", dirPath, "error", err)
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -281,8 +265,8 @@ func (t *dirTracker) tryAnalyzeDir(dirPath string) {
 			IndexedAt:        time.Now(),
 		}
 
-		if err := t.db.UpsertPoint(point); err != nil {
-			t.logger.Error(fmt.Sprintf("Error saving dir %s: %v", dirPath, err))
+		if err := t.db.UpsertPoint(ctx, point); err != nil {
+			t.logger.Error("dir save failed", "dir", dirPath, "error", err)
 			t.errors.Add(1)
 			t.notifyParent(dirPath)
 			return
@@ -347,56 +331,47 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		return fmt.Errorf("resolving root path: %w", err)
 	}
 
-	// Initialize providers
-	llm, err := providers.NewTextGenerator(cfg.LLM, logger)
+	ctx := context.Background()
+
+	llm, embedder, err := initProviders(cfg, logger)
 	if err != nil {
-		return fmt.Errorf("creating text generator: %w", err)
-	}
-	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding, logger)
-	if err != nil {
-		return fmt.Errorf("creating embedding provider: %w", err)
+		return err
 	}
 
-	// Determine vector size: use config value or auto-detect from provider
 	vectorSize := cfg.Embedding.VectorSize
 	if vectorSize <= 0 {
 		vectorSize, err = embedder.DetectVectorSize()
 		if err != nil {
 			return fmt.Errorf("detecting vector size: %w", err)
 		}
-		logger.Info("Auto-detected vector size", "vector_size", vectorSize)
+		logger.Info("auto-detected vector size", "vector_size", vectorSize)
 	}
 
-	// Initialize store
-	db := store.NewQdrantStore(cfg.Storage.URL, cfg.Storage.CollectionPrefix, cfg.Project.Name, vectorSize, logger)
+	db, err := store.NewStore(cfg.Storage, cfg.Project.Name, vectorSize, logger)
+	if err != nil {
+		return fmt.Errorf("initializing store: %w", err)
+	}
 
-	// Force mode: delete existing data and start fresh
 	if force {
-		logger.Info("Force mode: cleaning up existing data...")
-
-		overviewPath := filepath.Join(rootPath, ".vedcode", "project_overview.md")
-		if err := os.Remove(overviewPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing project overview: %w", err)
-		}
-		logger.Info("Deleted .vedcode/project_overview.md")
-
-		if err := db.DeleteCollection(); err != nil {
-			logger.Warn(fmt.Sprintf("could not delete collection: %v", err))
-		} else {
-			logger.Info("Deleted Qdrant collection")
+		if err := forceCleanup(ctx, db, rootPath, logger); err != nil {
+			return err
 		}
 	}
 
-	if err := db.EnsureCollection(); err != nil {
+	if err := db.EnsureCollection(ctx); err != nil {
 		return fmt.Errorf("ensuring collection: %w", err)
 	}
+	defer func() {
+		if fErr := db.Flush(ctx); fErr != nil {
+			logger.Error("flush store failed", "error", fErr)
+		}
+	}()
 
 	logger.Info("=== VedCode Indexer ===")
-	logger.Info(fmt.Sprintf("Project: %s", cfg.Project.Name))
-	logger.Info(fmt.Sprintf("Root: %s", rootPath))
+	logger.Info("project info", "name", cfg.Project.Name, "root", rootPath)
 
 	// --- Stage 1: Project structure analysis & cleanup ---
-	logger.Info("\n--- Stage 1: Project structure analysis & cleanup ---")
+	logger.Info("--- Stage 1: Project structure analysis & cleanup ---")
 
 	walkResult, err := walker.Walk(walker.Options{
 		RootPath:       rootPath,
@@ -406,100 +381,36 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("walking project: %w", err)
 	}
-	logger.Info(fmt.Sprintf("Found %d files", len(walkResult.Files)))
-	logger.Debug("walker completed",
-		"files_found", len(walkResult.Files),
-		"root_path", rootPath,
-	)
+	logger.Info("walker completed", "files_found", len(walkResult.Files))
 
-	// Build a set of current files for fast lookup
-	currentFiles := make(map[string]bool, len(walkResult.Files))
-	for _, f := range walkResult.Files {
-		currentFiles[f] = true
+	deletedCount, err := cleanupStaleFiles(ctx, db, walkResult.Files, logger)
+	if err != nil {
+		return err
 	}
 
-	// Clean up deleted files from Qdrant
-	existingPoints, err := db.GetAllFilePoints()
+	existingDirPoints, deletedDirCount, err := cleanupStaleDirs(ctx, db, walkResult.Files, logger)
+	if err != nil {
+		return err
+	}
+
+	projectOverview, err := analyzeProjectStructure(ctx, llm, cfg, walkResult.Tree, rootPath, logger)
+	if err != nil {
+		return err
+	}
+
+	// Build existing points map for hash comparison (keyed by file_path)
+	existingPoints, err := db.GetAllFilePoints(ctx)
 	if err != nil {
 		return fmt.Errorf("getting existing points: %w", err)
 	}
-
-	var deleteIDs []string
-	for _, p := range existingPoints {
-		if !currentFiles[p.FilePath] {
-			deleteIDs = append(deleteIDs, p.ID)
-		}
-	}
-
-	deletedCount := 0
-	if len(deleteIDs) > 0 {
-		if err := db.DeletePoints(deleteIDs); err != nil {
-			logger.Warn(fmt.Sprintf("error deleting stale points: %v", err))
-		} else {
-			deletedCount = len(deleteIDs)
-		}
-	}
-	logger.Info(fmt.Sprintf("Deleted %d stale file records from Qdrant", deletedCount))
-	logger.Debug("stale file cleanup", "deleted", deletedCount, "total_existing", len(existingPoints))
-
-	// Clean up deleted directories from Qdrant
-	existingDirPoints, err := db.GetAllDirPoints()
-	if err != nil {
-		return fmt.Errorf("getting existing dir points: %w", err)
-	}
-
-	currentDirs := extractUniqueDirs(walkResult.Files)
-	var deleteDirIDs []string
-	for _, p := range existingDirPoints {
-		if !currentDirs[p.FilePath] {
-			deleteDirIDs = append(deleteDirIDs, p.ID)
-		}
-	}
-
-	deletedDirCount := 0
-	if len(deleteDirIDs) > 0 {
-		if err := db.DeletePoints(deleteDirIDs); err != nil {
-			logger.Warn(fmt.Sprintf("error deleting stale dir points: %v", err))
-		} else {
-			deletedDirCount = len(deleteDirIDs)
-		}
-	}
-	logger.Info(fmt.Sprintf("Deleted %d stale directory records from Qdrant", deletedDirCount))
-	logger.Debug("stale dir cleanup", "deleted", deletedDirCount, "total_existing", len(existingDirPoints))
-
-	// Analyze project structure via LLM
-	structurePrompt := prompts.Render(cfg.Prompts.ProjectStructureAnalysis, map[string]string{
-		"CONTENT": walkResult.Tree,
-	})
-
-	logger.Info("Analyzing project structure...")
-	logger.Debug("analyzing project structure", "prompt_length", len(structurePrompt))
-
-	projectOverview, err := llm.GenerateContent(structurePrompt)
-	if err != nil {
-		return fmt.Errorf("analyzing project structure: %w", err)
-	}
-
-	// Save project overview to .vedcode/project_overview.md
-	vedcodeDir := filepath.Join(rootPath, ".vedcode")
-	if err := os.MkdirAll(vedcodeDir, 0o755); err != nil {
-		return fmt.Errorf("creating .vedcode directory: %w", err)
-	}
-	overviewPath := filepath.Join(vedcodeDir, "project_overview.md")
-	if err := os.WriteFile(overviewPath, []byte(projectOverview), 0o644); err != nil {
-		return fmt.Errorf("saving project overview: %w", err)
-	}
-	logger.Info(fmt.Sprintf("Project overview saved to %s", overviewPath))
-
-	// Build existing points map for hash comparison (keyed by file_path)
 	existingByPath := make(map[string]*store.Point, len(existingPoints))
 	for _, p := range existingPoints {
 		existingByPath[p.FilePath] = p
 	}
 
 	// --- Stage 2: File & directory indexing (interleaved) ---
-	logger.Info("\n--- Stage 2: File & directory indexing ---")
-	logger.Info(fmt.Sprintf("Using %d worker(s)", cfg.Indexer.Workers))
+	logger.Info("--- Stage 2: File & directory indexing ---")
+	logger.Info("indexing configuration", "workers", cfg.Indexer.Workers)
 
 	var indexedCount atomic.Int64
 	var errorCount atomic.Int64
@@ -512,24 +423,28 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	totalDirs := len(extractUniqueDirs(walkResult.Files))
 	totalItems := len(walkResult.Files) + totalDirs
 
-	// Create directory tracker — directories are analyzed automatically
-	// as soon as all their children (files + subdirs) are ready.
-	tracker := newDirTracker(
-		walkResult.Files, existingDirPoints,
-		db, llm, embedder, cfg, projectOverview,
-		sem, &wg, &progress, totalItems, logger,
-	)
+	tracker := newDirTracker(walkResult.Files, existingDirPoints, trackerDeps{
+		db:         db,
+		llm:        llm,
+		embedder:   embedder,
+		cfg:        cfg,
+		overview:   projectOverview,
+		sem:        sem,
+		wg:         &wg,
+		logger:     logger,
+		progress:   &progress,
+		totalItems: totalItems,
+	})
 
-	logger.Info(fmt.Sprintf("Found %d items to analyze (%d files, %d dirs)", totalItems, len(walkResult.Files), totalDirs))
+	logger.Info("items to analyze", "total", totalItems, "files", len(walkResult.Files), "dirs", totalDirs)
 
 	for _, relPath := range walkResult.Files {
 		absPath := filepath.Join(rootPath, relPath)
 
-		// Read file and compute hash before spawning goroutine (fast, allows early skip)
 		content, err := os.ReadFile(absPath)
 		if err != nil {
 			n := progress.Add(1)
-			logger.Error(fmt.Sprintf("[%d/%d] Error reading %s: %v", n, totalItems, relPath, err))
+			logger.Error("file read failed", "file", relPath, "progress", n, "total", totalItems, "error", err)
 			errorCount.Add(1)
 			tracker.fileFailed(relPath)
 			continue
@@ -537,7 +452,6 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 		hash := sha256sum(content)
 
-		// Check if file needs re-indexing
 		if existing, ok := existingByPath[relPath]; ok && existing.FileHash == hash {
 			logger.Debug("file skipped (unchanged)", "file", relPath, "hash", hash)
 			skippedCount++
@@ -545,15 +459,15 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			continue
 		}
 
-		// Acquire semaphore slot and launch worker
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(relPath string, content []byte, hash string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			ctx := context.Background()
 			n := progress.Add(1)
-			logger.Info(fmt.Sprintf("[%d/%d] Indexing %s", n, totalItems, relPath))
+			logger.Info("indexing file", "file", relPath, "progress", n, "total", totalItems)
 			logger.Debug("file indexing started",
 				"file", relPath,
 				"index", n,
@@ -563,7 +477,6 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			)
 			fileStart := time.Now()
 
-			// Analyze file via LLM
 			filePrompt := prompts.Render(cfg.Prompts.SourceCodeAnalysis, map[string]string{
 				"CONTENT":          string(content),
 				"PROJECT_OVERVIEW": projectOverview,
@@ -571,7 +484,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 			response, err := llm.GenerateJSON(filePrompt, fileAnalysisSchema)
 			if err != nil {
-				logger.Error(fmt.Sprintf("[%d/%d] Error analyzing %s: %v", n, totalItems, relPath, err))
+				logger.Error("file analysis failed", "file", relPath, "progress", n, "total", totalItems, "error", err)
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -579,7 +492,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 			analysis, err := parseAnalysis(response)
 			if err != nil {
-				logger.Error(fmt.Sprintf("[%d/%d] Error parsing analysis for %s: %v", n, totalItems, relPath, err))
+				logger.Error("file analysis parse failed", "file", relPath, "progress", n, "total", totalItems, "error", err)
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -592,16 +505,14 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 				"language", analysis.Language,
 			)
 
-			// Get embedding for the summary
 			embedding, err := embedder.EmbedContent(analysis.Summary)
 			if err != nil {
-				logger.Error(fmt.Sprintf("[%d/%d] Error embedding %s: %v", n, totalItems, relPath, err))
+				logger.Error("file embedding failed", "file", relPath, "progress", n, "total", totalItems, "error", err)
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
 			}
 
-			// Upsert point in Qdrant
 			point := &store.Point{
 				ID:               store.FilePathToID(relPath),
 				Vector:           embedding,
@@ -615,8 +526,8 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 				IndexedAt:        time.Now(),
 			}
 
-			if err := db.UpsertPoint(point); err != nil {
-				logger.Error(fmt.Sprintf("[%d/%d] Error saving %s: %v", n, totalItems, relPath, err))
+			if err := db.UpsertPoint(ctx, point); err != nil {
+				logger.Error("file save failed", "file", relPath, "progress", n, "total", totalItems, "error", err)
 				errorCount.Add(1)
 				tracker.fileFailed(relPath)
 				return
@@ -633,20 +544,14 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 	}
 	wg.Wait()
 
+	if err := db.Flush(ctx); err != nil {
+		return fmt.Errorf("flushing store: %w", err)
+	}
+
 	dirIndexed, dirSkipped, dirErrors := tracker.results()
 
 	// --- Summary ---
-	logger.Info("\n=== Indexing complete ===")
-	logger.Info(fmt.Sprintf("Total files:   %d", len(walkResult.Files)))
-	logger.Info(fmt.Sprintf("Indexed:       %d", indexedCount.Load()))
-	logger.Info(fmt.Sprintf("Skipped:       %d (unchanged)", skippedCount))
-	logger.Info(fmt.Sprintf("Deleted:       %d (removed from project)", deletedCount))
-	logger.Info(fmt.Sprintf("Errors:        %d", errorCount.Load()))
-	logger.Info(fmt.Sprintf("Dirs indexed:  %d", dirIndexed))
-	logger.Info(fmt.Sprintf("Dirs skipped:  %d (unchanged)", dirSkipped))
-	logger.Info(fmt.Sprintf("Dirs errors:   %d", dirErrors))
-
-	logger.Debug("indexing complete",
+	logger.Info("=== Indexing complete ===",
 		"total_files", len(walkResult.Files),
 		"indexed", indexedCount.Load(),
 		"skipped", skippedCount,
@@ -654,10 +559,131 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		"errors", errorCount.Load(),
 		"dirs_indexed", dirIndexed,
 		"dirs_skipped", dirSkipped,
+		"dirs_deleted", deletedDirCount,
 		"dirs_errors", dirErrors,
 	)
 
 	return nil
+}
+
+// initProviders creates the LLM and embedding providers from config.
+func initProviders(cfg *config.Config, logger *slog.Logger) (providers.TextGenerator, providers.EmbeddingProvider, error) {
+	llm, err := providers.NewTextGenerator(cfg.LLM, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating text generator: %w", err)
+	}
+	embedder, err := providers.NewEmbeddingProvider(cfg.Embedding, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating embedding provider: %w", err)
+	}
+	return llm, embedder, nil
+}
+
+// forceCleanup removes existing data for a fresh re-index.
+func forceCleanup(ctx context.Context, db store.Store, rootPath string, logger *slog.Logger) error {
+	logger.Info("force mode: cleaning up existing data")
+
+	overviewPath := filepath.Join(rootPath, ".vedcode", "project_overview.md")
+	if err := os.Remove(overviewPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing project overview: %w", err)
+	}
+	logger.Info("deleted project overview")
+
+	if err := db.DeleteCollection(ctx); err != nil {
+		logger.Warn("could not delete collection", "error", err)
+	} else {
+		logger.Info("deleted store collection")
+	}
+
+	return nil
+}
+
+// cleanupStaleFiles removes file records from the store that no longer exist on disk.
+func cleanupStaleFiles(ctx context.Context, db store.Store, currentFilesList []string, logger *slog.Logger) (int, error) {
+	currentFiles := make(map[string]bool, len(currentFilesList))
+	for _, f := range currentFilesList {
+		currentFiles[f] = true
+	}
+
+	existingPoints, err := db.GetAllFilePoints(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("getting existing points: %w", err)
+	}
+
+	var deleteIDs []string
+	for _, p := range existingPoints {
+		if !currentFiles[p.FilePath] {
+			deleteIDs = append(deleteIDs, p.ID)
+		}
+	}
+
+	deletedCount := 0
+	if len(deleteIDs) > 0 {
+		if err := db.DeletePoints(ctx, deleteIDs); err != nil {
+			logger.Warn("error deleting stale points", "error", err)
+		} else {
+			deletedCount = len(deleteIDs)
+		}
+	}
+	logger.Info("stale file cleanup", "deleted", deletedCount, "total_existing", len(existingPoints))
+
+	return deletedCount, nil
+}
+
+// cleanupStaleDirs removes directory records from the store that no longer exist.
+// Returns the existing dir points (for hash comparison) and the count of deleted dirs.
+func cleanupStaleDirs(ctx context.Context, db store.Store, files []string, logger *slog.Logger) ([]*store.Point, int, error) {
+	existingDirPoints, err := db.GetAllDirPoints(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("getting existing dir points: %w", err)
+	}
+
+	currentDirs := extractUniqueDirs(files)
+	var deleteDirIDs []string
+	for _, p := range existingDirPoints {
+		if !currentDirs[p.FilePath] {
+			deleteDirIDs = append(deleteDirIDs, p.ID)
+		}
+	}
+
+	deletedDirCount := 0
+	if len(deleteDirIDs) > 0 {
+		if err := db.DeletePoints(ctx, deleteDirIDs); err != nil {
+			logger.Warn("error deleting stale dir points", "error", err)
+		} else {
+			deletedDirCount = len(deleteDirIDs)
+		}
+	}
+	logger.Info("stale dir cleanup", "deleted", deletedDirCount, "total_existing", len(existingDirPoints))
+
+	return existingDirPoints, deletedDirCount, nil
+}
+
+// analyzeProjectStructure generates the project overview via LLM and saves it to disk.
+func analyzeProjectStructure(_ context.Context, llm providers.TextGenerator, cfg *config.Config, tree, rootPath string, logger *slog.Logger) (string, error) {
+	structurePrompt := prompts.Render(cfg.Prompts.ProjectStructureAnalysis, map[string]string{
+		"CONTENT": tree,
+	})
+
+	logger.Info("analyzing project structure")
+	logger.Debug("project structure prompt", "prompt_length", len(structurePrompt))
+
+	projectOverview, err := llm.GenerateContent(structurePrompt)
+	if err != nil {
+		return "", fmt.Errorf("analyzing project structure: %w", err)
+	}
+
+	vedcodeDir := filepath.Join(rootPath, ".vedcode")
+	if err := os.MkdirAll(vedcodeDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating .vedcode directory: %w", err)
+	}
+	overviewPath := filepath.Join(vedcodeDir, "project_overview.md")
+	if err := os.WriteFile(overviewPath, []byte(projectOverview), 0o644); err != nil {
+		return "", fmt.Errorf("saving project overview: %w", err)
+	}
+	logger.Info("project overview saved", "path", overviewPath)
+
+	return projectOverview, nil
 }
 
 // sha256sum computes the SHA256 hex digest of data.
@@ -707,7 +733,6 @@ func extractUniqueDirs(files []string) map[string]bool {
 	}
 	return dirs
 }
-
 
 // computeDirHash computes a deterministic hash for a directory based on
 // sorted file hashes of direct children and dir hashes of direct subdirectories.
