@@ -73,6 +73,40 @@ Based on the files and subdirectories above, provide:
 
 Respond in JSON format.`
 
+// DefaultEnrichedOverviewAnalysis is the built-in prompt for enriched project overview generation
+// based on deep analysis of all source files and directories.
+const DefaultEnrichedOverviewAnalysis = `You are a senior software architect. Generate a comprehensive project overview based on deep analysis of the codebase.
+
+## File Tree
+
+${FILE_TREE}
+
+## Top-Level Directory Summaries
+[[[
+${TOP_LEVEL_DIRS_SUMMARIES}
+]]]
+
+## Root-Level File Summaries
+[[[
+${ROOT_FILES_SUMMARIES}
+]]]
+
+## Instructions
+
+You have access to the project file tree AND semantic summaries of all top-level directories and root-level files, produced by deep analysis of every source file.
+
+Based on this information, produce a comprehensive project overview:
+
+1. **Framework / Platform** — What programming language(s), framework(s), or platform is this project built on?
+2. **Architecture** — What architectural style does the project follow? Include specific patterns observed in the codebase.
+3. **Modules / Components** — List the main modules, packages, or top-level components with detailed descriptions of their purpose and responsibilities.
+4. **Domains** — Identify the business domains or bounded contexts present in the project.
+5. **Patterns** — Note any recognizable design patterns or conventions.
+
+## Output Format
+
+Write a structured overview in Markdown. Be more detailed than a simple file-tree analysis — you have actual semantic knowledge about what each component does. Focus on accuracy and completeness. No more than 500 words.`
+
 // Render replaces all occurrences of ${KEY} variables in the template
 // with the provided values. Unknown variables are left as-is.
 func Render(template string, vars map[string]string) string {

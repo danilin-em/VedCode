@@ -16,6 +16,7 @@ type Options struct {
 	RootPath       string
 	MaxFileSize    int64
 	IgnorePatterns []string
+	TreeFileDepth  int // max depth at which files are shown in the tree (0 = root only)
 }
 
 // Result contains the output of walking the file system.
@@ -89,6 +90,7 @@ func Walk(opts Options) (*Result, error) {
 	}
 
 	var files []string
+	fileSizes := make(map[string]int64)
 	err = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip entries with errors
@@ -156,6 +158,7 @@ func Walk(opts Options) (*Result, error) {
 		}
 
 		files = append(files, relPath)
+		fileSizes[relPath] = fi.Size()
 		return nil
 	})
 	if err != nil {
@@ -166,7 +169,7 @@ func Walk(opts Options) (*Result, error) {
 
 	return &Result{
 		Files: files,
-		Tree:  buildTree(files),
+		Tree:  buildTree(files, fileSizes, opts.TreeFileDepth),
 	}, nil
 }
 
@@ -264,13 +267,18 @@ func isBinaryContent(path string) bool {
 
 // treeNode represents a node in the file tree structure.
 type treeNode struct {
-	name     string
-	children map[string]*treeNode
-	order    []string // maintains sorted insertion order
+	name      string
+	children  map[string]*treeNode
+	order     []string           // maintains sorted insertion order
+	isFile    bool               // true for file leaf nodes
+	totalSize int64              // recursive total size in bytes
+	extCounts map[string]int     // recursive file counts by extension
 }
 
 // buildTree creates a text tree representation from a sorted list of file paths.
-func buildTree(files []string) string {
+// Directories show metadata (file counts by extension, total size).
+// Files are shown up to treeFileDepth levels deep; deeper files are omitted.
+func buildTree(files []string, fileSizes map[string]int64, treeFileDepth int) string {
 	if len(files) == 0 {
 		return ".\n"
 	}
@@ -280,7 +288,7 @@ func buildTree(files []string) string {
 	for _, f := range files {
 		parts := strings.Split(f, string(filepath.Separator))
 		current := root
-		for _, part := range parts {
+		for i, part := range parts {
 			if _, exists := current.children[part]; !exists {
 				child := &treeNode{
 					name:     part,
@@ -290,19 +298,59 @@ func buildTree(files []string) string {
 				current.order = append(current.order, part)
 			}
 			current = current.children[part]
+
+			// Mark leaf node (file) with size and extension
+			if i == len(parts)-1 {
+				current.isFile = true
+				current.totalSize = fileSizes[f]
+				ext := strings.ToLower(filepath.Ext(part))
+				if ext == "" {
+					ext = part // extensionless files: Makefile, Dockerfile
+				}
+				current.extCounts = map[string]int{ext: 1}
+			}
 		}
 	}
 
+	computeTreeMeta(root)
+
 	var sb strings.Builder
 	sb.WriteString(".\n")
-	writeTree(&sb, root, "")
+	writeTree(&sb, root, "", 0, treeFileDepth)
 	return sb.String()
 }
 
-func writeTree(sb *strings.Builder, n *treeNode, prefix string) {
-	for i, name := range n.order {
+// computeTreeMeta aggregates totalSize and extCounts from leaves to root (post-order).
+func computeTreeMeta(n *treeNode) {
+	for _, name := range n.order {
 		child := n.children[name]
-		isLast := i == len(n.order)-1
+		computeTreeMeta(child)
+		n.totalSize += child.totalSize
+		for ext, count := range child.extCounts {
+			if n.extCounts == nil {
+				n.extCounts = make(map[string]int)
+			}
+			n.extCounts[ext] += count
+		}
+	}
+}
+
+// writeTree recursively writes the tree. Files are shown up to maxFileDepth
+// levels deep; at deeper levels, only directories are shown.
+func writeTree(sb *strings.Builder, n *treeNode, prefix string, depth int, maxFileDepth int) {
+	// Filter visible children: skip files deeper than maxFileDepth
+	var visible []string
+	for _, name := range n.order {
+		child := n.children[name]
+		if depth > maxFileDepth && child.isFile {
+			continue
+		}
+		visible = append(visible, name)
+	}
+
+	for i, name := range visible {
+		child := n.children[name]
+		isLast := i == len(visible)-1
 
 		connector := "├── "
 		childPrefix := "│   "
@@ -311,9 +359,53 @@ func writeTree(sb *strings.Builder, n *treeNode, prefix string) {
 			childPrefix = "    "
 		}
 
-		sb.WriteString(prefix + connector + name + "\n")
-		if len(child.children) > 0 {
-			writeTree(sb, child, prefix+childPrefix)
+		if child.isFile {
+			sb.WriteString(prefix + connector + name + "\n")
+		} else {
+			sb.WriteString(prefix + connector + name + " " + formatDirMeta(child) + "\n")
+			writeTree(sb, child, prefix+childPrefix, depth+1, maxFileDepth)
 		}
+	}
+}
+
+// formatDirMeta formats directory metadata as "(3 .go, 2 .yaml, 1.2 KB)".
+func formatDirMeta(n *treeNode) string {
+	if len(n.extCounts) == 0 {
+		return "(empty)"
+	}
+
+	// Sort extensions by count descending, then alphabetically
+	type extEntry struct {
+		ext   string
+		count int
+	}
+	entries := make([]extEntry, 0, len(n.extCounts))
+	for ext, count := range n.extCounts {
+		entries = append(entries, extEntry{ext, count})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].count != entries[j].count {
+			return entries[i].count > entries[j].count
+		}
+		return entries[i].ext < entries[j].ext
+	})
+
+	var parts []string
+	for _, e := range entries {
+		parts = append(parts, fmt.Sprintf("%d %s", e.count, e.ext))
+	}
+
+	return "(" + strings.Join(parts, ", ") + ", " + formatSize(n.totalSize) + ")"
+}
+
+// formatSize formats bytes into a human-readable string.
+func formatSize(bytes int64) string {
+	switch {
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", bytes)
 	}
 }

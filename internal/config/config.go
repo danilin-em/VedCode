@@ -31,6 +31,7 @@ type IndexerConfig struct {
 	MaxFileSize    int64    `yaml:"max_file_size"`
 	IgnorePatterns []string `yaml:"ignore_patterns"`
 	Workers        int      `yaml:"workers"`
+	TreeFileDepth  int      `yaml:"tree_file_depth"`
 }
 
 type ProviderConfig struct {
@@ -51,9 +52,11 @@ type PromptsConfig struct {
 	ProjectStructureAnalysis string `yaml:"project_structure_analysis"`
 	SourceCodeAnalysis       string `yaml:"source_code_analysis"`
 	DirectoryAnalysis        string `yaml:"directory_analysis"`
+	EnrichedOverviewAnalysis string `yaml:"enriched_overview_analysis"`
 }
 
 const DefaultMaxFileSize = 1048576 // 1 MB
+const DefaultTreeFileDepth = 3
 
 var envVarRegexp = regexp.MustCompile(`\$\{(\w+)\}`)
 
@@ -188,6 +191,9 @@ func merge(home, project *Config) *Config {
 	if project.Indexer.Workers != 0 {
 		cfg.Indexer.Workers = project.Indexer.Workers
 	}
+	if project.Indexer.TreeFileDepth != 0 {
+		cfg.Indexer.TreeFileDepth = project.Indexer.TreeFileDepth
+	}
 
 	// IgnorePatterns: append project patterns to home patterns
 	if len(project.Indexer.IgnorePatterns) > 0 {
@@ -203,6 +209,9 @@ func merge(home, project *Config) *Config {
 	}
 	if project.Prompts.DirectoryAnalysis != "" {
 		cfg.Prompts.DirectoryAnalysis = project.Prompts.DirectoryAnalysis
+	}
+	if project.Prompts.EnrichedOverviewAnalysis != "" {
+		cfg.Prompts.EnrichedOverviewAnalysis = project.Prompts.EnrichedOverviewAnalysis
 	}
 
 	return &cfg
@@ -226,6 +235,9 @@ func setDefaults(cfg *Config) {
 	if cfg.Indexer.Workers <= 0 {
 		cfg.Indexer.Workers = 2
 	}
+	if cfg.Indexer.TreeFileDepth <= 0 {
+		cfg.Indexer.TreeFileDepth = DefaultTreeFileDepth
+	}
 	if cfg.Prompts.ProjectStructureAnalysis == "" {
 		cfg.Prompts.ProjectStructureAnalysis = prompts.DefaultProjectStructureAnalysis
 	}
@@ -234,6 +246,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Prompts.DirectoryAnalysis == "" {
 		cfg.Prompts.DirectoryAnalysis = prompts.DefaultDirectoryAnalysis
+	}
+	if cfg.Prompts.EnrichedOverviewAnalysis == "" {
+		cfg.Prompts.EnrichedOverviewAnalysis = prompts.DefaultEnrichedOverviewAnalysis
 	}
 }
 

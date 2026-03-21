@@ -324,6 +324,20 @@ func (t *dirTracker) results() (indexed, skipped, errors int) {
 	return int(t.indexed.Load()), int(t.skipped.Load()), int(t.errors.Load())
 }
 
+// topLevelSummaries returns summaries of top-level directories (direct children of root).
+func (t *dirTracker) topLevelSummaries() map[string]string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	result := make(map[string]string)
+	for dir, summary := range t.dirSummary {
+		if filepath.Dir(dir) == "." {
+			result[dir] = summary
+		}
+	}
+	return result
+}
+
 // Run executes the full indexing cycle for the project.
 func Run(configPath string, force bool, logger *slog.Logger) error {
 	cfg, err := config.Load(configPath)
@@ -402,6 +416,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		RootPath:       rootPath,
 		MaxFileSize:    cfg.Indexer.MaxFileSize,
 		IgnorePatterns: cfg.Indexer.IgnorePatterns,
+		TreeFileDepth:  cfg.Indexer.TreeFileDepth,
 	})
 	if err != nil {
 		return fmt.Errorf("walking project: %w", err)
@@ -522,6 +537,10 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 
 	logger.Info(fmt.Sprintf("Found %d items to analyze (%d files, %d dirs)", totalItems, len(walkResult.Files), totalDirs))
 
+	// Collect root-level file summaries for Phase 3 (enriched overview)
+	var rootFilesMu sync.Mutex
+	var rootFileSummaries []*fileInfo
+
 	for _, relPath := range walkResult.Files {
 		absPath := filepath.Join(rootPath, relPath)
 
@@ -542,6 +561,14 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			logger.Debug("file skipped (unchanged)", "file", relPath, "hash", hash)
 			skippedCount++
 			tracker.fileCompleted(relPath, existing.Summary, existing.FileHash)
+			if filepath.Dir(relPath) == "." {
+				rootFilesMu.Lock()
+				rootFileSummaries = append(rootFileSummaries, &fileInfo{
+					filePath: relPath,
+					summary:  existing.Summary,
+				})
+				rootFilesMu.Unlock()
+			}
 			continue
 		}
 
@@ -628,12 +655,49 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 			)
 
 			tracker.fileCompleted(relPath, analysis.Summary, hash)
+			if filepath.Dir(relPath) == "." {
+				rootFilesMu.Lock()
+				rootFileSummaries = append(rootFileSummaries, &fileInfo{
+					filePath: relPath,
+					summary:  analysis.Summary,
+				})
+				rootFilesMu.Unlock()
+			}
 			indexedCount.Add(1)
 		}(relPath, content, hash)
 	}
 	wg.Wait()
 
 	dirIndexed, dirSkipped, dirErrors := tracker.results()
+
+	// --- Stage 3: Enriched project overview ---
+	logger.Info("\n--- Stage 3: Enriched project overview ---")
+
+	topLevelDirs := tracker.topLevelSummaries()
+	if len(topLevelDirs) > 0 || len(rootFileSummaries) > 0 {
+		topDirText := buildTopLevelDirsSummariesText(topLevelDirs)
+		rootFilesText := buildFilesSummariesText(rootFileSummaries)
+
+		enrichedPrompt := prompts.Render(cfg.Prompts.EnrichedOverviewAnalysis, map[string]string{
+			"FILE_TREE":                walkResult.Tree,
+			"TOP_LEVEL_DIRS_SUMMARIES": topDirText,
+			"ROOT_FILES_SUMMARIES":     rootFilesText,
+		})
+
+		logger.Info("Generating enriched project overview...")
+		enrichedOverview, err := llm.GenerateContent(enrichedPrompt)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Error generating enriched overview: %v", err))
+		} else {
+			if err := os.WriteFile(overviewPath, []byte(enrichedOverview), 0o644); err != nil {
+				logger.Error(fmt.Sprintf("Error saving enriched overview: %v", err))
+			} else {
+				logger.Info(fmt.Sprintf("Enriched project overview saved to %s", overviewPath))
+			}
+		}
+	} else {
+		logger.Info("Skipping enriched overview (no directory/file summaries available)")
+	}
 
 	// --- Summary ---
 	logger.Info("\n=== Indexing complete ===")
@@ -748,6 +812,19 @@ func buildFilesSummariesText(files []*fileInfo) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// buildTopLevelDirsSummariesText formats top-level directory summaries for the enriched overview prompt.
+func buildTopLevelDirsSummariesText(dirs map[string]string) string {
+	if len(dirs) == 0 {
+		return "(no directories)"
+	}
+	var lines []string
+	for dir, summary := range dirs {
+		lines = append(lines, "- "+dir+"/: "+summary)
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
 }
 
 // buildSubdirsSummariesText formats subdirectory summaries for the LLM prompt.
