@@ -1,0 +1,211 @@
+# =============================================================================
+# VedCode Configuration
+# =============================================================================
+#
+# VedCode uses a two-tier configuration model:
+#   1. ~/.vedcode.yml        — global defaults (shared across all projects)
+#   2. .vedcode.yml          — project-specific overrides
+#
+# Merge behavior:
+#   - Project values override home values for all fields
+#   - indexer.ignore_patterns are APPENDED (not replaced)
+#
+# Environment variables:
+#   Use ${VAR_NAME} syntax anywhere in config values.
+#   If the variable is not set, the placeholder remains unchanged.
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Indexer — controls how the project files are scanned and processed
+# -----------------------------------------------------------------------------
+indexer:
+  # Maximum file size in bytes. Files larger than this are skipped.
+  # Default: 1048576 (1 MB)
+  max_file_size: 1048576
+
+  # Number of concurrent workers for file processing.
+  # Default: 2
+  workers: 2
+
+  # Glob patterns for files/directories to ignore during indexing.
+  # When merging configs, project patterns are appended to home patterns.
+  ignore_patterns:
+    - "*.min.js"
+    - "*.map"
+    - "*.lock"
+    - "node_modules/*"
+    - ".git/*"
+    - "dist/*"
+    - "build/*"
+    - "vendor/*"
+
+# -----------------------------------------------------------------------------
+# LLM — language model used for code analysis and summarization
+# -----------------------------------------------------------------------------
+#
+# Supported providers:
+#   - "gemini"       — Google Gemini API (requires api_key)
+#   - "generic-http" — Any OpenAI-compatible API (requires url)
+#
+llm:
+  # Provider name. Required.
+  provider: "gemini"
+
+  # API key for SDK-based providers (gemini).
+  # Not required for generic-http (but can be used as Bearer token).
+  api_key: "${GEMINI_API_KEY}"
+
+  # Base URL for HTTP-based providers (generic-http).
+  # Not required for gemini.
+  # Examples:
+  #   Ollama:    "http://localhost:11434/v1"
+  #   LM Studio: "http://localhost:1234/v1"
+  #   vLLM:      "http://localhost:8000/v1"
+  url: ""
+
+  # Model identifier. Required.
+  # Examples:
+  #   Gemini:      "gemini-2.5-flash"
+  #   Ollama:      "llama2", "mistral"
+  model: "gemini-2.5-flash"
+
+# -----------------------------------------------------------------------------
+# Embedding — model used to generate vector embeddings for semantic search
+# -----------------------------------------------------------------------------
+#
+# Supported providers: same as LLM ("gemini", "generic-http")
+#
+embedding:
+  # Provider name. Required.
+  provider: "gemini"
+
+  # API key for SDK-based providers (gemini).
+  api_key: "${GEMINI_API_KEY}"
+
+  # Base URL for HTTP-based providers (generic-http).
+  # Uses /embeddings endpoint.
+  url: ""
+
+  # Embedding model identifier. Required.
+  # Examples:
+  #   Gemini:  "gemini-embedding-001"
+  #   Ollama:  "nomic-embed-text"
+  model: "gemini-embedding-001"
+
+  # Embedding vector dimensionality.
+  # Set to 0 or omit to auto-detect (gemini provider detects automatically).
+  # For generic-http, it's recommended to specify explicitly.
+  # Common values: 384, 768, 1536
+  vector_size: 0
+
+# -----------------------------------------------------------------------------
+# Storage — vector database backend for storing embeddings and metadata
+# -----------------------------------------------------------------------------
+#
+# Supported types:
+#   - "qdrant"    — External Qdrant server (requires url)
+#   - "embedded"  — Built-in embedded database, no external dependencies (chromem-go)
+#
+storage:
+  # Storage backend type. Required.
+  type: "embedded"
+
+  # Qdrant server URL. Required only for type "qdrant".
+  # Example: "http://localhost:6333"
+  url: ""
+
+  # Local directory path for embedded storage persistence.
+  # Ignored for qdrant. Relative paths are resolved from project root.
+  # Default: ".vedcode/store"
+  path: ".vedcode/store"
+
+  # Prefix for collection names. Required.
+  # Collections are named as: {collection_prefix}{project_name}
+  # where project_name is derived from the working directory path.
+  collection_prefix: "vedcode_"
+
+# -----------------------------------------------------------------------------
+# Prompts — custom prompt templates for LLM analysis stages
+# -----------------------------------------------------------------------------
+#
+# Each prompt supports variable substitution:
+#   ${CONTENT}           — file tree or source code content
+#   ${PROJECT_OVERVIEW}  — previously generated project overview
+#   ${DIR_PATH}          — directory path being analyzed
+#   ${FILES_SUMMARIES}   — summaries of files in directory
+#   ${SUBDIRS_SUMMARIES} — summaries of subdirectories
+#
+# Omit any field to use built-in defaults.
+#
+prompts:
+  # Analyzes the project file tree to determine framework, architecture,
+  # tech stack, and domain patterns. Output: markdown (<=300 words).
+  # Available variables: ${CONTENT}
+  project_structure_analysis: ""
+
+  # Analyzes individual source files for semantic description.
+  # Output: JSON {summary, responsibilities[], domain, language}
+  # Available variables: ${PROJECT_OVERVIEW}, ${CONTENT}
+  source_code_analysis: ""
+
+  # Analyzes directories and their contents for semantic description.
+  # Output: JSON {summary, responsibilities[], domain}
+  # Available variables: ${DIR_PATH}, ${PROJECT_OVERVIEW}, ${FILES_SUMMARIES}, ${SUBDIRS_SUMMARIES}
+  directory_analysis: ""
+
+# =============================================================================
+# Configuration Examples
+# =============================================================================
+#
+# --- Example 1: Google Gemini + Embedded storage (simplest setup) -----------
+#
+# llm:
+#   provider: "gemini"
+#   api_key: "${GEMINI_API_KEY}"
+#   model: "gemini-2.5-flash"
+#
+# embedding:
+#   provider: "gemini"
+#   api_key: "${GEMINI_API_KEY}"
+#   model: "gemini-embedding-001"
+#
+# storage:
+#   type: "embedded"
+#   collection_prefix: "vedcode_"
+#
+# --- Example 2: Local Ollama + Embedded storage (fully offline) -------------
+#
+# llm:
+#   provider: "generic-http"
+#   url: "http://localhost:11434/v1"
+#   model: "llama2"
+#
+# embedding:
+#   provider: "generic-http"
+#   url: "http://localhost:11434/v1"
+#   model: "nomic-embed-text"
+#   vector_size: 768
+#
+# storage:
+#   type: "embedded"
+#   collection_prefix: "local_"
+#
+# --- Example 3: Gemini + Qdrant (production setup) -------------------------
+#
+# llm:
+#   provider: "gemini"
+#   api_key: "${GEMINI_API_KEY}"
+#   model: "gemini-2.5-flash"
+#
+# embedding:
+#   provider: "gemini"
+#   api_key: "${GEMINI_API_KEY}"
+#   model: "gemini-embedding-001"
+#
+# storage:
+#   type: "qdrant"
+#   url: "http://localhost:6333"
+#   collection_prefix: "vedcode_"
+#
+# =============================================================================
