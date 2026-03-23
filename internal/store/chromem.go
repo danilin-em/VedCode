@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,19 +40,17 @@ func (s *ChromemStore) requireCollection() (*chromem.Collection, error) {
 	return col, nil
 }
 
-// pointMeta stores metadata for each point in a side-index.
-// chromem-go lacks a "list all documents" API, so we maintain
-// this index for GetAllFilePoints/GetAllDirPoints operations.
+// pointMeta is a thin side-index entry. chromem-go lacks a "list all documents"
+// API, so we maintain this minimal index for ListPaths, ID lookups, and
+// summary access for unchanged files during incremental indexing.
+// Rich metadata (responsibilities, domain, language) lives only in chromem
+// document metadata and is retrieved via GetByID when needed.
 type pointMeta struct {
-	ID               string    `json:"id"`
-	FilePath         string    `json:"file_path"`
-	FileHash         string    `json:"file_hash"`
-	Type             string    `json:"type"`
-	Summary          string    `json:"summary"`
-	Responsibilities []string  `json:"responsibilities,omitempty"`
-	Domain           string    `json:"domain,omitempty"`
-	Language         string    `json:"language,omitempty"`
-	IndexedAt        time.Time `json:"indexed_at"`
+	ID       string `json:"id"`
+	FilePath string `json:"file_path"`
+	FileHash string `json:"file_hash"`
+	Type     string `json:"type"`
+	Summary  string `json:"summary"`
 }
 
 // NewChromemStore creates a new embedded vector store backed by chromem-go.
@@ -164,112 +161,67 @@ func (s *ChromemStore) UpsertPoint(ctx context.Context, point *Point) error {
 	return nil
 }
 
-// UpsertPoints creates or updates multiple points in a single batch.
-func (s *ChromemStore) UpsertPoints(ctx context.Context, points []*Point) error {
-	if len(points) == 0 {
-		return nil
-	}
-
-	col, err := s.requireCollection()
-	if err != nil {
-		return err
-	}
-
-	s.logger.Debug("UpsertPoints", "count", len(points))
-
-	// Delete existing documents
-	ids := make([]string, 0, len(points))
-	for _, p := range points {
-		id := p.ID
-		if id == "" {
-			id = FilePathToID(p.FilePath)
-		}
-		ids = append(ids, id)
-	}
-	if err := col.Delete(ctx, nil, nil, ids...); err != nil {
-		s.logger.Warn("delete before upsert failed", "count", len(ids), "error", err)
-	}
-
-	// Add all documents
-	docs := make([]chromem.Document, 0, len(points))
-	for i, p := range points {
-		docs = append(docs, pointToDocument(ids[i], p))
-	}
-
-	if err := col.AddDocuments(ctx, docs, 1); err != nil {
-		return fmt.Errorf("add documents: %w", err)
-	}
-
-	s.mu.Lock()
-	for i, p := range points {
-		s.index[ids[i]] = pointToMeta(ids[i], p)
-	}
-	s.dirty = true
-	s.mu.Unlock()
-
-	return nil
-}
-
-// GetAllFilePoints returns all points with type=file from the metadata index.
-func (s *ChromemStore) GetAllFilePoints(_ context.Context) ([]*Point, error) {
-	s.logger.Debug("GetAllFilePoints")
+// ListPaths returns map[filePath]PathInfo for all points of the given type.
+// This is a lightweight operation that reads only from the side-index.
+func (s *ChromemStore) ListPaths(_ context.Context, pointType string) (map[string]PathInfo, error) {
+	s.logger.Debug("ListPaths", "type", pointType)
 	start := time.Now()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var points []*Point
+	result := make(map[string]PathInfo)
 	for _, m := range s.index {
-		if m.Type == "file" {
-			points = append(points, metaToPoint(m))
+		if m.Type == pointType {
+			result[m.FilePath] = PathInfo{FileHash: m.FileHash, Summary: m.Summary}
 		}
 	}
 
-	s.logger.Debug("GetAllFilePoints completed",
-		"count", len(points),
+	s.logger.Debug("ListPaths completed",
+		"type", pointType,
+		"count", len(result),
 		"duration", time.Since(start),
 	)
-	return points, nil
-}
-
-// GetAllDirPoints returns all points with type=directory from the metadata index.
-func (s *ChromemStore) GetAllDirPoints(_ context.Context) ([]*Point, error) {
-	s.logger.Debug("GetAllDirPoints")
-	start := time.Now()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var points []*Point
-	for _, m := range s.index {
-		if m.Type == "directory" {
-			points = append(points, metaToPoint(m))
-		}
-	}
-
-	s.logger.Debug("GetAllDirPoints completed",
-		"count", len(points),
-		"duration", time.Since(start),
-	)
-	return points, nil
+	return result, nil
 }
 
 // GetPointByFilePath finds a point by its file_path.
-func (s *ChromemStore) GetPointByFilePath(_ context.Context, path string) (*Point, error) {
+// Uses the side-index for ID lookup, then chromem GetByID for full metadata.
+// Handles both file points (ID from path) and directory points (ID from "dir:"+path).
+func (s *ChromemStore) GetPointByFilePath(ctx context.Context, path string) (*Point, error) {
 	s.logger.Debug("GetPointByFilePath", "path", path)
 
-	id := FilePathToID(path)
+	// Try file ID first, then directory ID
+	fileID := FilePathToID(path)
+	dirID := FilePathToID("dir:" + path)
 
 	s.mu.RLock()
-	m, ok := s.index[id]
+	_, fileOK := s.index[fileID]
+	_, dirOK := s.index[dirID]
 	s.mu.RUnlock()
 
-	if !ok {
+	var id string
+	switch {
+	case fileOK:
+		id = fileID
+	case dirOK:
+		id = dirID
+	default:
 		s.logger.Debug("GetPointByFilePath: not found", "path", path)
 		return nil, nil
 	}
 
-	return metaToPoint(m), nil
+	col, err := s.requireCollection()
+	if err != nil {
+		return nil, err
+	}
+
+	doc, err := col.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get document by ID: %w", err)
+	}
+
+	return documentToPoint(doc), nil
 }
 
 // DeletePoints deletes points by their IDs.
@@ -434,7 +386,8 @@ func pointToDocument(id string, p *Point) chromem.Document {
 	}
 
 	if len(p.Responsibilities) > 0 {
-		metadata["responsibilities"] = strings.Join(p.Responsibilities, "||")
+		data, _ := json.Marshal(p.Responsibilities)
+		metadata["responsibilities"] = string(data)
 	}
 
 	if !p.IndexedAt.IsZero() {
@@ -449,40 +402,34 @@ func pointToDocument(id string, p *Point) chromem.Document {
 	}
 }
 
-func pointToMeta(id string, p *Point) *pointMeta {
+func documentToPoint(doc chromem.Document) *Point {
 	var resps []string
-	if len(p.Responsibilities) > 0 {
-		resps = make([]string, len(p.Responsibilities))
-		copy(resps, p.Responsibilities)
+	if raw, ok := doc.Metadata["responsibilities"]; ok && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &resps)
 	}
-	return &pointMeta{
-		ID:               id,
-		FilePath:         p.FilePath,
-		FileHash:         p.FileHash,
-		Type:             p.Type,
-		Summary:          p.Summary,
+	var indexedAt time.Time
+	if raw, ok := doc.Metadata["indexed_at"]; ok {
+		indexedAt, _ = time.Parse(time.RFC3339, raw)
+	}
+	return &Point{
+		ID:               doc.ID,
+		Summary:          doc.Content,
+		FilePath:         doc.Metadata["file_path"],
+		FileHash:         doc.Metadata["file_hash"],
+		Type:             doc.Metadata["type"],
 		Responsibilities: resps,
-		Domain:           p.Domain,
-		Language:         p.Language,
-		IndexedAt:        p.IndexedAt,
+		Domain:           doc.Metadata["domain"],
+		Language:         doc.Metadata["language"],
+		IndexedAt:        indexedAt,
 	}
 }
 
-func metaToPoint(m *pointMeta) *Point {
-	var resps []string
-	if len(m.Responsibilities) > 0 {
-		resps = make([]string, len(m.Responsibilities))
-		copy(resps, m.Responsibilities)
-	}
-	return &Point{
-		ID:               m.ID,
-		FilePath:         m.FilePath,
-		FileHash:         m.FileHash,
-		Type:             m.Type,
-		Summary:          m.Summary,
-		Responsibilities: resps,
-		Domain:           m.Domain,
-		Language:         m.Language,
-		IndexedAt:        m.IndexedAt,
+func pointToMeta(id string, p *Point) *pointMeta {
+	return &pointMeta{
+		ID:       id,
+		FilePath: p.FilePath,
+		FileHash: p.FileHash,
+		Type:     p.Type,
+		Summary:  p.Summary,
 	}
 }

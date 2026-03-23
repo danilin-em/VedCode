@@ -120,60 +120,14 @@ func TestChromemUpsertOverwrite(t *testing.T) {
 	}
 }
 
-func TestChromemUpsertPoints(t *testing.T) {
-	s := newTestChromemStore(t)
-	ctx := context.Background()
-
-	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	err := s.UpsertPoints(ctx, []*Point{
-		{
-			Vector:    []float32{0.1, 0.2, 0.3},
-			Summary:   "File A",
-			FilePath:  "src/a.go",
-			FileHash:  "hashA",
-			Type:      "file",
-			Language:  "go",
-			IndexedAt: now,
-		},
-		{
-			Vector:    []float32{0.4, 0.5, 0.6},
-			Summary:   "File B",
-			FilePath:  "src/b.go",
-			FileHash:  "hashB",
-			Type:      "file",
-			Language:  "go",
-			IndexedAt: now,
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpsertPoints failed: %v", err)
-	}
-
-	points, err := s.GetAllFilePoints(ctx)
-	if err != nil {
-		t.Fatalf("GetAllFilePoints failed: %v", err)
-	}
-	if len(points) != 2 {
-		t.Fatalf("expected 2 points, got %d", len(points))
-	}
-}
-
-func TestChromemUpsertPointsEmpty(t *testing.T) {
-	s := newTestChromemStore(t)
-	err := s.UpsertPoints(context.Background(), []*Point{})
-	if err != nil {
-		t.Fatalf("UpsertPoints with empty slice should not error: %v", err)
-	}
-}
-
-func TestChromemGetAllFilePoints(t *testing.T) {
+func TestChromemListPaths_File(t *testing.T) {
 	s := newTestChromemStore(t)
 	ctx := context.Background()
 
 	points := []*Point{
-		{Vector: []float32{0.1, 0.2, 0.3}, Summary: "File", FilePath: "src/main.go", Type: "file"},
-		{Vector: []float32{0.4, 0.5, 0.6}, Summary: "Dir", FilePath: "src", Type: "directory"},
-		{Vector: []float32{0.7, 0.8, 0.9}, Summary: "File 2", FilePath: "src/util.go", Type: "file"},
+		{Vector: []float32{0.1, 0.2, 0.3}, Summary: "File", FilePath: "src/main.go", FileHash: "hash1", Type: "file"},
+		{Vector: []float32{0.4, 0.5, 0.6}, Summary: "Dir", FilePath: "src", FileHash: "dirhash", Type: "directory"},
+		{Vector: []float32{0.7, 0.8, 0.9}, Summary: "File 2", FilePath: "src/util.go", FileHash: "hash2", Type: "file"},
 	}
 	for _, p := range points {
 		if err := s.UpsertPoint(ctx, p); err != nil {
@@ -181,29 +135,32 @@ func TestChromemGetAllFilePoints(t *testing.T) {
 		}
 	}
 
-	filePoints, err := s.GetAllFilePoints(ctx)
+	paths, err := s.ListPaths(ctx, "file")
 	if err != nil {
-		t.Fatalf("GetAllFilePoints failed: %v", err)
+		t.Fatalf("ListPaths failed: %v", err)
 	}
-	if len(filePoints) != 2 {
-		t.Fatalf("expected 2 file points, got %d", len(filePoints))
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 file paths, got %d", len(paths))
 	}
-
-	for _, p := range filePoints {
-		if p.Type != "file" {
-			t.Errorf("expected type file, got %s", p.Type)
-		}
+	if paths["src/main.go"].FileHash != "hash1" {
+		t.Errorf("expected hash1 for src/main.go, got %s", paths["src/main.go"].FileHash)
+	}
+	if paths["src/util.go"].FileHash != "hash2" {
+		t.Errorf("expected hash2 for src/util.go, got %s", paths["src/util.go"].FileHash)
+	}
+	if paths["src/main.go"].Summary != "File" {
+		t.Errorf("expected summary 'File' for src/main.go, got %s", paths["src/main.go"].Summary)
 	}
 }
 
-func TestChromemGetAllDirPoints(t *testing.T) {
+func TestChromemListPaths_Directory(t *testing.T) {
 	s := newTestChromemStore(t)
 	ctx := context.Background()
 
 	points := []*Point{
-		{Vector: []float32{0.1, 0.2, 0.3}, Summary: "File", FilePath: "src/main.go", Type: "file"},
-		{Vector: []float32{0.4, 0.5, 0.6}, Summary: "Dir 1", FilePath: "src", Type: "directory"},
-		{Vector: []float32{0.7, 0.8, 0.9}, Summary: "Dir 2", FilePath: "internal", Type: "directory"},
+		{Vector: []float32{0.1, 0.2, 0.3}, Summary: "File", FilePath: "src/main.go", FileHash: "hash1", Type: "file"},
+		{Vector: []float32{0.4, 0.5, 0.6}, Summary: "Dir 1", FilePath: "src", FileHash: "dirhash1", Type: "directory"},
+		{Vector: []float32{0.7, 0.8, 0.9}, Summary: "Dir 2", FilePath: "internal", FileHash: "dirhash2", Type: "directory"},
 	}
 	for _, p := range points {
 		if err := s.UpsertPoint(ctx, p); err != nil {
@@ -211,18 +168,18 @@ func TestChromemGetAllDirPoints(t *testing.T) {
 		}
 	}
 
-	dirPoints, err := s.GetAllDirPoints(ctx)
+	paths, err := s.ListPaths(ctx, "directory")
 	if err != nil {
-		t.Fatalf("GetAllDirPoints failed: %v", err)
+		t.Fatalf("ListPaths failed: %v", err)
 	}
-	if len(dirPoints) != 2 {
-		t.Fatalf("expected 2 dir points, got %d", len(dirPoints))
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 dir paths, got %d", len(paths))
 	}
-
-	for _, p := range dirPoints {
-		if p.Type != "directory" {
-			t.Errorf("expected type directory, got %s", p.Type)
-		}
+	if paths["src"].FileHash != "dirhash1" {
+		t.Errorf("expected dirhash1 for src, got %s", paths["src"].FileHash)
+	}
+	if paths["internal"].FileHash != "dirhash2" {
+		t.Errorf("expected dirhash2 for internal, got %s", paths["internal"].FileHash)
 	}
 }
 
@@ -339,12 +296,12 @@ func TestChromemDeleteCollection(t *testing.T) {
 	}
 
 	// Index should be empty
-	points, err := s.GetAllFilePoints(ctx)
+	paths, err := s.ListPaths(ctx, "file")
 	if err != nil {
-		t.Fatalf("GetAllFilePoints failed: %v", err)
+		t.Fatalf("ListPaths failed: %v", err)
 	}
-	if len(points) != 0 {
-		t.Errorf("expected 0 points after delete, got %d", len(points))
+	if len(paths) != 0 {
+		t.Errorf("expected 0 paths after delete, got %d", len(paths))
 	}
 }
 

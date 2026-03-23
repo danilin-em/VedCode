@@ -93,8 +93,8 @@ type dirTracker struct {
 	childDirs   map[string][]string     // dir → direct child subdirectories
 	dirSummary  map[string]string       // dir → summary (filled after analysis)
 	dirHash     map[string]string       // dir → computed hash
-	allDirs     map[string]bool         // all tracked directories
-	existingDir map[string]*store.Point // existing dir points from store
+	allDirs     map[string]bool            // all tracked directories
+	existingDir map[string]store.PathInfo // existing dir path → {hash, summary}
 
 	trackerDeps
 
@@ -104,7 +104,8 @@ type dirTracker struct {
 }
 
 // newDirTracker creates a dirTracker with pre-computed dependency counts.
-func newDirTracker(files []string, existingDirPoints []*store.Point, deps trackerDeps) *dirTracker {
+// existingDirPaths is map[dirPath]PathInfo from ListPaths.
+func newDirTracker(files []string, existingDirPaths map[string]store.PathInfo, deps trackerDeps) *dirTracker {
 	allDirs := extractUniqueDirs(files)
 
 	// Count direct child files per directory
@@ -130,12 +131,6 @@ func newDirTracker(files []string, existingDirPoints []*store.Point, deps tracke
 		}
 	}
 
-	// Build existing dir points map
-	existingDir := make(map[string]*store.Point, len(existingDirPoints))
-	for _, p := range existingDirPoints {
-		existingDir[p.FilePath] = p
-	}
-
 	return &dirTracker{
 		pending:     pending,
 		fileInfos:   make(map[string][]*fileInfo),
@@ -143,7 +138,7 @@ func newDirTracker(files []string, existingDirPoints []*store.Point, deps tracke
 		dirSummary:  make(map[string]string),
 		dirHash:     make(map[string]string),
 		allDirs:     allDirs,
-		existingDir: existingDir,
+		existingDir: existingDirPaths,
 		trackerDeps: deps,
 	}
 }
@@ -398,14 +393,10 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		return err
 	}
 
-	// Build existing points map for hash comparison (keyed by file_path)
-	existingPoints, err := db.GetAllFilePoints(ctx)
+	// Build existing file paths map for hash comparison
+	existingByPath, err := db.ListPaths(ctx, "file")
 	if err != nil {
-		return fmt.Errorf("getting existing points: %w", err)
-	}
-	existingByPath := make(map[string]*store.Point, len(existingPoints))
-	for _, p := range existingPoints {
-		existingByPath[p.FilePath] = p
+		return fmt.Errorf("listing existing file paths: %w", err)
 	}
 
 	// --- Stage 2: File & directory indexing (interleaved) ---
@@ -455,7 +446,7 @@ func Run(configPath string, force bool, logger *slog.Logger) error {
 		if existing, ok := existingByPath[relPath]; ok && existing.FileHash == hash {
 			logger.Debug("file skipped (unchanged)", "file", relPath, "hash", hash)
 			skippedCount++
-			tracker.fileCompleted(relPath, existing.Summary, existing.FileHash)
+			tracker.fileCompleted(relPath, existing.Summary, hash)
 			continue
 		}
 
@@ -605,15 +596,15 @@ func cleanupStaleFiles(ctx context.Context, db store.Store, currentFilesList []s
 		currentFiles[f] = true
 	}
 
-	existingPoints, err := db.GetAllFilePoints(ctx)
+	existingFiles, err := db.ListPaths(ctx, "file")
 	if err != nil {
-		return 0, fmt.Errorf("getting existing points: %w", err)
+		return 0, fmt.Errorf("listing existing file paths: %w", err)
 	}
 
 	var deleteIDs []string
-	for _, p := range existingPoints {
-		if !currentFiles[p.FilePath] {
-			deleteIDs = append(deleteIDs, p.ID)
+	for path := range existingFiles {
+		if !currentFiles[path] {
+			deleteIDs = append(deleteIDs, store.FilePathToID(path))
 		}
 	}
 
@@ -625,24 +616,24 @@ func cleanupStaleFiles(ctx context.Context, db store.Store, currentFilesList []s
 			deletedCount = len(deleteIDs)
 		}
 	}
-	logger.Info("stale file cleanup", "deleted", deletedCount, "total_existing", len(existingPoints))
+	logger.Info("stale file cleanup", "deleted", deletedCount, "total_existing", len(existingFiles))
 
 	return deletedCount, nil
 }
 
 // cleanupStaleDirs removes directory records from the store that no longer exist.
-// Returns the existing dir points (for hash comparison) and the count of deleted dirs.
-func cleanupStaleDirs(ctx context.Context, db store.Store, files []string, logger *slog.Logger) ([]*store.Point, int, error) {
-	existingDirPoints, err := db.GetAllDirPoints(ctx)
+// Returns the existing dir paths (map[path]PathInfo for hash comparison) and the count of deleted dirs.
+func cleanupStaleDirs(ctx context.Context, db store.Store, files []string, logger *slog.Logger) (map[string]store.PathInfo, int, error) {
+	existingDirPaths, err := db.ListPaths(ctx, "directory")
 	if err != nil {
-		return nil, 0, fmt.Errorf("getting existing dir points: %w", err)
+		return nil, 0, fmt.Errorf("listing existing dir paths: %w", err)
 	}
 
 	currentDirs := extractUniqueDirs(files)
 	var deleteDirIDs []string
-	for _, p := range existingDirPoints {
-		if !currentDirs[p.FilePath] {
-			deleteDirIDs = append(deleteDirIDs, p.ID)
+	for path := range existingDirPaths {
+		if !currentDirs[path] {
+			deleteDirIDs = append(deleteDirIDs, store.FilePathToID("dir:"+path))
 		}
 	}
 
@@ -654,9 +645,9 @@ func cleanupStaleDirs(ctx context.Context, db store.Store, files []string, logge
 			deletedDirCount = len(deleteDirIDs)
 		}
 	}
-	logger.Info("stale dir cleanup", "deleted", deletedDirCount, "total_existing", len(existingDirPoints))
+	logger.Info("stale dir cleanup", "deleted", deletedDirCount, "total_existing", len(existingDirPaths))
 
-	return existingDirPoints, deletedDirCount, nil
+	return existingDirPaths, deletedDirCount, nil
 }
 
 // analyzeProjectStructure generates the project overview via LLM and saves it to disk.

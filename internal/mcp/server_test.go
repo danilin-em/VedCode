@@ -25,14 +25,15 @@ type mockStore struct {
 	pointErr      error
 }
 
-func (m *mockStore) EnsureCollection(_ context.Context) error                    { return nil }
-func (m *mockStore) DeleteCollection(_ context.Context) error                    { return nil }
-func (m *mockStore) UpsertPoint(_ context.Context, _ *store.Point) error         { return nil }
-func (m *mockStore) UpsertPoints(_ context.Context, _ []*store.Point) error      { return nil }
-func (m *mockStore) GetAllFilePoints(_ context.Context) ([]*store.Point, error)  { return nil, nil }
-func (m *mockStore) GetAllDirPoints(_ context.Context) ([]*store.Point, error)   { return nil, nil }
-func (m *mockStore) DeletePoints(_ context.Context, _ []string) error            { return nil }
-func (m *mockStore) Flush(_ context.Context) error                              { return nil }
+func (m *mockStore) EnsureCollection(_ context.Context) error            { return nil }
+func (m *mockStore) DeleteCollection(_ context.Context) error            { return nil }
+func (m *mockStore) UpsertPoint(_ context.Context, _ *store.Point) error { return nil }
+func (m *mockStore) DeletePoints(_ context.Context, _ []string) error    { return nil }
+func (m *mockStore) Flush(_ context.Context) error                       { return nil }
+
+func (m *mockStore) ListPaths(_ context.Context, _ string) (map[string]store.PathInfo, error) {
+	return nil, nil
+}
 
 func (m *mockStore) Search(_ context.Context, _ []float32, _ int) ([]*store.SearchResult, error) {
 	return m.searchResults, m.searchErr

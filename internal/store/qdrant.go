@@ -126,46 +126,10 @@ func (q *QdrantStore) UpsertPoint(ctx context.Context, point *Point) error {
 	return q.put(ctx, "/collections/"+q.collection+"/points", body)
 }
 
-// UpsertPoints creates or updates multiple points in the collection in a single request.
-func (q *QdrantStore) UpsertPoints(ctx context.Context, points []*Point) error {
-	if len(points) == 0 {
-		return nil
-	}
-
-	q.logger.Debug("UpsertPoints", "count", len(points))
-
-	rawPoints := make([]map[string]any, 0, len(points))
-	for _, point := range points {
-		id := point.ID
-		if id == "" {
-			id = FilePathToID(point.FilePath)
-		}
-		rawPoints = append(rawPoints, map[string]any{
-			"id":     id,
-			"vector": point.Vector,
-			"payload": map[string]any{
-				"summary":          point.Summary,
-				"file_path":        point.FilePath,
-				"file_hash":        point.FileHash,
-				"type":             point.Type,
-				"responsibilities": point.Responsibilities,
-				"domain":           point.Domain,
-				"language":         point.Language,
-				"indexed_at":       point.IndexedAt.Format(time.RFC3339),
-			},
-		})
-	}
-
-	body := map[string]any{
-		"points": rawPoints,
-	}
-
-	return q.put(ctx, "/collections/"+q.collection+"/points", body)
-}
-
-// GetAllFilePoints returns all points with type=file, paginating through all results.
-func (q *QdrantStore) GetAllFilePoints(ctx context.Context) ([]*Point, error) {
-	q.logger.Debug("GetAllFilePoints")
+// ListPaths returns map[filePath]PathInfo for all points of the given type.
+// Uses Qdrant scroll with a type filter, requesting only file_path, file_hash, and summary fields.
+func (q *QdrantStore) ListPaths(ctx context.Context, pointType string) (map[string]PathInfo, error) {
+	q.logger.Debug("ListPaths", "type", pointType)
 	start := time.Now()
 
 	filter := map[string]any{
@@ -173,83 +137,64 @@ func (q *QdrantStore) GetAllFilePoints(ctx context.Context) ([]*Point, error) {
 			{
 				"key": "type",
 				"match": map[string]any{
-					"value": "file",
+					"value": pointType,
 				},
 			},
 		},
 	}
 
-	points, err := q.scrollAll(ctx, filter)
+	result, err := q.scrollPaths(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
 
-	q.logger.Debug("GetAllFilePoints completed",
-		"count", len(points),
+	q.logger.Debug("ListPaths completed",
+		"type", pointType,
+		"count", len(result),
 		"duration", time.Since(start),
 	)
-	return points, nil
+	return result, nil
 }
 
-// GetAllDirPoints returns all points with type=directory, paginating through all results.
-func (q *QdrantStore) GetAllDirPoints(ctx context.Context) ([]*Point, error) {
-	q.logger.Debug("GetAllDirPoints")
-	start := time.Now()
-
-	filter := map[string]any{
-		"must": []map[string]any{
-			{
-				"key": "type",
-				"match": map[string]any{
-					"value": "directory",
-				},
-			},
-		},
-	}
-
-	points, err := q.scrollAll(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-
-	q.logger.Debug("GetAllDirPoints completed",
-		"count", len(points),
-		"duration", time.Since(start),
-	)
-	return points, nil
-}
-
-// scrollAll paginates through all Qdrant scroll results for a given filter.
-func (q *QdrantStore) scrollAll(ctx context.Context, filter map[string]any) ([]*Point, error) {
+// scrollPaths paginates through Qdrant scroll results, extracting file_path, file_hash, and summary.
+func (q *QdrantStore) scrollPaths(ctx context.Context, filter map[string]any) (map[string]PathInfo, error) {
 	const pageSize = 1000
-	var allPoints []*Point
-	var offset any // nil for first page, then next_page_offset
+	result := make(map[string]PathInfo)
+	var offset any
 
 	for {
 		body := map[string]any{
 			"filter":       filter,
 			"limit":        pageSize,
-			"with_payload": true,
+			"with_payload": []string{"file_path", "file_hash", "summary"},
 			"with_vector":  false,
 		}
 		if offset != nil {
 			body["offset"] = offset
 		}
 
-		var result qdrantScrollResponse
-		if err := q.postJSON(ctx, "/collections/"+q.collection+"/points/scroll", body, &result); err != nil {
+		var resp qdrantScrollResponse
+		if err := q.postJSON(ctx, "/collections/"+q.collection+"/points/scroll", body, &resp); err != nil {
 			return nil, err
 		}
 
-		allPoints = append(allPoints, parsePoints(result.Result.Points)...)
+		for _, p := range resp.Result.Points {
+			fp := getString(p.Payload, "file_path")
+			if fp != "" {
+				result[fp] = PathInfo{
+					FileHash: getString(p.Payload, "file_hash"),
+					Summary:  getString(p.Payload, "summary"),
+				}
+			}
+		}
 
-		if result.Result.NextPageOffset == nil || len(result.Result.Points) < pageSize {
+		if resp.Result.NextPageOffset == nil || len(resp.Result.Points) < pageSize {
 			break
 		}
-		offset = result.Result.NextPageOffset
+		offset = resp.Result.NextPageOffset
 	}
 
-	return allPoints, nil
+	return result, nil
 }
 
 // GetPointByFilePath finds a point by its file_path payload field.

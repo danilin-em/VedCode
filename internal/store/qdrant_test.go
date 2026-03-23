@@ -173,73 +173,7 @@ func TestUpsertPoint_UsesProvidedID(t *testing.T) {
 	}
 }
 
-func TestUpsertPoints(t *testing.T) {
-	var receivedBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("expected PUT, got %s", r.Method)
-		}
-		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":{"status":"completed"}}`))
-	}))
-	defer srv.Close()
-
-	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	err := s.UpsertPoints(context.Background(), []*Point{
-		{
-			Vector:    []float32{0.1, 0.2},
-			Summary:   "First file",
-			FilePath:  "src/a.go",
-			FileHash:  "hash1",
-			Type:      "file",
-			Language:  "go",
-			IndexedAt: now,
-		},
-		{
-			Vector:    []float32{0.3, 0.4},
-			Summary:   "Second file",
-			FilePath:  "src/b.go",
-			FileHash:  "hash2",
-			Type:      "file",
-			Language:  "go",
-			IndexedAt: now,
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpsertPoints failed: %v", err)
-	}
-
-	points := receivedBody["points"].([]any)
-	if len(points) != 2 {
-		t.Fatalf("expected 2 points, got %d", len(points))
-	}
-
-	p1 := points[0].(map[string]any)
-	p1Payload := p1["payload"].(map[string]any)
-	if p1Payload["file_path"] != "src/a.go" {
-		t.Errorf("expected file_path src/a.go, got %v", p1Payload["file_path"])
-	}
-
-	p2 := points[1].(map[string]any)
-	p2Payload := p2["payload"].(map[string]any)
-	if p2Payload["file_path"] != "src/b.go" {
-		t.Errorf("expected file_path src/b.go, got %v", p2Payload["file_path"])
-	}
-}
-
-func TestUpsertPoints_Empty(t *testing.T) {
-	s := NewQdrantStore("http://localhost:6333", "vedcode_", "test", 3072, noopLogger)
-	err := s.UpsertPoints(context.Background(), []*Point{})
-	if err != nil {
-		t.Fatalf("UpsertPoints with empty slice should not error: %v", err)
-	}
-}
-
-func TestGetAllFilePoints(t *testing.T) {
+func TestListPaths_File(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -252,6 +186,10 @@ func TestGetAllFilePoints(t *testing.T) {
 		if condition["key"] != "type" {
 			t.Errorf("expected filter key 'type', got %v", condition["key"])
 		}
+		matchVal := condition["match"].(map[string]any)
+		if matchVal["value"] != "file" {
+			t.Errorf("expected filter value 'file', got %v", matchVal["value"])
+		}
 
 		resp := `{
 			"result": {
@@ -259,27 +197,15 @@ func TestGetAllFilePoints(t *testing.T) {
 					{
 						"id": "uuid-1",
 						"payload": {
-							"summary": "Main entry",
 							"file_path": "src/main.go",
-							"file_hash": "hash1",
-							"type": "file",
-							"responsibilities": ["entry point"],
-							"domain": "Core",
-							"language": "go",
-							"indexed_at": "2025-01-01T00:00:00Z"
+							"file_hash": "hash1"
 						}
 					},
 					{
 						"id": "uuid-2",
 						"payload": {
-							"summary": "Config loader",
 							"file_path": "src/config.go",
-							"file_hash": "hash2",
-							"type": "file",
-							"responsibilities": ["load config", "validate"],
-							"domain": "Infrastructure",
-							"language": "go",
-							"indexed_at": "2025-01-01T00:00:00Z"
+							"file_hash": "hash2"
 						}
 					}
 				],
@@ -292,27 +218,23 @@ func TestGetAllFilePoints(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	points, err := s.GetAllFilePoints(context.Background())
+	paths, err := s.ListPaths(context.Background(), "file")
 	if err != nil {
-		t.Fatalf("GetAllFilePoints failed: %v", err)
+		t.Fatalf("ListPaths failed: %v", err)
 	}
 
-	if len(points) != 2 {
-		t.Fatalf("expected 2 points, got %d", len(points))
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 paths, got %d", len(paths))
 	}
-
-	if points[0].FilePath != "src/main.go" {
-		t.Errorf("expected file_path src/main.go, got %s", points[0].FilePath)
+	if paths["src/main.go"].FileHash != "hash1" {
+		t.Errorf("expected hash1 for src/main.go, got %s", paths["src/main.go"].FileHash)
 	}
-	if points[0].ID != "uuid-1" {
-		t.Errorf("expected ID uuid-1, got %s", points[0].ID)
-	}
-	if len(points[1].Responsibilities) != 2 {
-		t.Errorf("expected 2 responsibilities, got %d", len(points[1].Responsibilities))
+	if paths["src/config.go"].FileHash != "hash2" {
+		t.Errorf("expected hash2 for src/config.go, got %s", paths["src/config.go"].FileHash)
 	}
 }
 
-func TestGetAllDirPoints(t *testing.T) {
+func TestListPaths_Directory(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -332,14 +254,8 @@ func TestGetAllDirPoints(t *testing.T) {
 				"points": [{
 					"id": "uuid-dir-1",
 					"payload": {
-						"summary": "Storage layer",
 						"file_path": "internal/store",
-						"file_hash": "dirhash1",
-						"type": "directory",
-						"responsibilities": ["Vector storage", "REST client"],
-						"domain": "Infrastructure",
-						"language": "",
-						"indexed_at": "2025-01-01T00:00:00Z"
+						"file_hash": "dirhash1"
 					}
 				}],
 				"next_page_offset": null
@@ -351,18 +267,15 @@ func TestGetAllDirPoints(t *testing.T) {
 	defer srv.Close()
 
 	s := NewQdrantStore(srv.URL, "vedcode_", "test", 3072, noopLogger)
-	points, err := s.GetAllDirPoints(context.Background())
+	paths, err := s.ListPaths(context.Background(), "directory")
 	if err != nil {
-		t.Fatalf("GetAllDirPoints failed: %v", err)
+		t.Fatalf("ListPaths failed: %v", err)
 	}
-	if len(points) != 1 {
-		t.Fatalf("expected 1 point, got %d", len(points))
+	if len(paths) != 1 {
+		t.Fatalf("expected 1 path, got %d", len(paths))
 	}
-	if points[0].Type != "directory" {
-		t.Errorf("expected type directory, got %s", points[0].Type)
-	}
-	if points[0].FilePath != "internal/store" {
-		t.Errorf("expected file_path internal/store, got %s", points[0].FilePath)
+	if paths["internal/store"].FileHash != "dirhash1" {
+		t.Errorf("expected dirhash1 for internal/store, got %s", paths["internal/store"].FileHash)
 	}
 }
 
@@ -552,8 +465,8 @@ func TestQdrantError(t *testing.T) {
 		t.Error("expected error, got nil")
 	}
 
-	// GetAllFilePoints should fail
-	_, err = s.GetAllFilePoints(ctx)
+	// ListPaths should fail
+	_, err = s.ListPaths(ctx, "file")
 	if err == nil {
 		t.Error("expected error, got nil")
 	}

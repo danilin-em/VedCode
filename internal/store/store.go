@@ -24,6 +24,12 @@ type Point struct {
 	IndexedAt        time.Time `json:"indexed_at"`
 }
 
+// PathInfo holds lightweight metadata returned by ListPaths.
+type PathInfo struct {
+	FileHash string
+	Summary  string
+}
+
 // SearchResult represents a single search result from vector similarity search.
 type SearchResult struct {
 	FilePath string  `json:"file_path"`
@@ -33,16 +39,24 @@ type SearchResult struct {
 
 // Store defines the interface for vector storage operations.
 type Store interface {
+	// Management
 	EnsureCollection(ctx context.Context) error
 	DeleteCollection(ctx context.Context) error
-	UpsertPoint(ctx context.Context, point *Point) error
-	UpsertPoints(ctx context.Context, points []*Point) error
-	GetAllFilePoints(ctx context.Context) ([]*Point, error)
-	GetAllDirPoints(ctx context.Context) ([]*Point, error)
-	GetPointByFilePath(ctx context.Context, path string) (*Point, error)
-	DeletePoints(ctx context.Context, ids []string) error
-	Search(ctx context.Context, vector []float32, limit int) ([]*SearchResult, error)
 	Flush(ctx context.Context) error
+
+	// Write
+	UpsertPoint(ctx context.Context, point *Point) error
+	DeletePoints(ctx context.Context, ids []string) error
+
+	// Read (full Point from underlying storage)
+	GetPointByFilePath(ctx context.Context, path string) (*Point, error)
+
+	// Lightweight lists (from side-index / filtered scroll, no vectors)
+	// Returns map[filePath]PathInfo for the given point type ("file" or "directory").
+	ListPaths(ctx context.Context, pointType string) (map[string]PathInfo, error)
+
+	// Search
+	Search(ctx context.Context, vector []float32, limit int) ([]*SearchResult, error)
 }
 
 // NewStore creates a Store implementation based on config.
